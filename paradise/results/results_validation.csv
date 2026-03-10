@@ -1,0 +1,12 @@
+yaml,csv,batch,dev_num,dev_type
+pretrain_llama2_7b.yaml,llama2_7B_8D_A2.csv,8,8,2
+pretrain_llama2_7b.yaml,llama2_7B_8D_A3.csv,8,8,3
+pretrain_llama2_13b.yaml,llama2_13B_32D_32B_A2.csv,32,32,2
+pretrain_qwen1_5_72b.yaml,qwen1.5_72B_64D_64B_A2.csv,64,64,2
+ds/shallowseek.yaml,deepseek_8L_64D_8B_A3.csv,8,64,3
+ds/DSGZ_128p_29MFU.yaml,deepseek_15L_128D_1920B_A3_FullRec.csv,1920,128,3
+cm/cm_628b_128p.yaml,cm_628B_128D_A2.csv,128,128,2
+cm/jiutian_240b_8192p_6T0429v1_6T_4K.yaml,jiutian_1024D_1152B_A2_NoRec.csv,1024,1536,2
+ds/telecom/32p_8dp.yaml,telecom_32D_256B_8DP.csv,256,32,2
+ds/telecom/ori_latest.yaml,telecom_128D_256B.csv,256,128,2
+ds/telecom/ori_latest.yaml,telecom_128D_128B.csv,128,128,2

@@ -1,0 +1,77 @@
+# trainer config
+trainer:
+  model_name: 'vit'
+
+# runner config
+runner_config:
+  batch_size: 1
+
+# wrapper cell config
+runner_wrapper:
+  use_clip_grad: True
+
+# parallel context config
+parallel:
+  enable_parallel_optimizer: True
+  parallel_optimizer_config:
+    gradient_accumulation_shard: False
+    #optimizer_weight_shard_size: 4
+
+# default parallel of device num = 8 for Atlas 800T A2
+parallel_config:
+  data_parallel: 1 #4
+  model_parallel: 8 #4
+  pipeline_stage: 8
+  expert_parallel: 1 # 8
+  use_seq_parallel: True
+  micro_batch_num: &micro_batch_num 8
+  vocab_emb_dp: True
+
+# recompute config
+recompute_config:
+  recompute: False 
+  select_recompute: False
+  parallel_optimizer_comm_recompute: False
+  mp_comm_recompute: False
+  recompute_slice_activation: False
+
+# mindspore context init config
+context:
+  max_device_memory: "54GB"
+  
+# model config
+model:
+  model_config: #ViT
+    patch_size: 14
+    image_size: 448
+    batch_size: 1
+    # seq_length: 
+    hidden_size: 1152
+    num_layers: &num_layers 26
+    num_heads: 16
+    n_kv_heads: 16
+    add_class_token: false
+    class_token_len: 0
+    #vocab_size: 
+    intermediate_size: 4304
+    compute_dtype: "bfloat16"
+    layernorm_compute_type: "float32" #"bfloat16"
+    residual_dtype: "float32"
+    softmax_compute_type: "float32" #"bfloat16"
+    rotary_dtype: "float32"
+    param_init_type: "float32"
+    router_dense_type: "float32"
+    use_flash_attention: True
+    offset: 0
+
+moe_config:
+  expert_model_parallel: 1    # add
+  moe_intermediate_size: 4304 #1536 #1728 #3456
+  expert_num: &expert_num 1 #160 #128 #64
+  num_experts_chosen: 1 #16 #8
+  shared_expert_num: 0
+  capacity_factor: &capacity_factor 1.5
+  first_k_dense_replace: 0
+  use_gmm: False #True
+  enable_deredundency: True
+  

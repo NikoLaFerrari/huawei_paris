@@ -1,0 +1,238 @@
+auto_trans_ckpt: false
+callbacks:
+- per_print_times: 1
+  type: MFLossMonitor
+- balance_via_topk_bias: true
+  expert_num: 256
+  micro_batch_num: 1
+  mtp_depth: 1
+  num_layers: 8
+  topk_bias_update_rate: 0.001
+  type: TopkBiasBalanceCallback
+- async_save: false
+  checkpoint_format: safetensors
+  integrated_save: false
+  keep_checkpoint_max: 5
+  prefix: deepseekv3
+  save_checkpoint_steps: 1000
+  type: CheckpointMonitor
+context:
+  ascend_config:
+    parallel_speed_up_json_path: /home/ma-user/modelarts/user-job-dir/mindformers-dev-25.0.0.B031/parallel_speed_up.json
+  device_target: Ascend
+  jit_config:
+    jit_level: O1
+  max_call_depth: 10000
+  max_device_memory: 55GB
+  mode: 0
+  save_graphs: false
+  save_graphs_path: ./graph
+init_start_profile: false
+load_checkpoint: ''
+lr_schedule:
+  learning_rate: 0.00022
+  total_steps: -1
+  type: ConstantWarmUpLR
+  warmup_ratio: 0.02
+micro_batch_interleave_num: 1
+model:
+  arch:
+    auto_register: deepseek3.DeepseekV3ForCausalLM
+    type: DeepseekV3ForCausalLM
+  model_config:
+    auto_register: deepseek3_config.DeepseekV3Config
+    batch_size: 1
+    bos_token_id: 100000
+    checkpoint_name_or_path: ''
+    compute_dtype: bfloat16
+    eos_token_id: 100001
+    extend_method: None
+    hidden_size: 7168
+    ignore_token_id: -100
+    input_sliced_sig: true
+    intermediate_size: 18432
+    kv_lora_rank: 512
+    layernorm_compute_type: float32
+    max_position_embeddings: 4096
+    mtp_depth: 1
+    mtp_loss_factor: 0.3
+    multiple_of: 256
+    n_kv_heads: 128
+    num_heads: 128
+    num_layers: 8
+    offset: 0
+    pad_token_id: 100001
+    param_init_type: float32
+    q_lora_rank: 1536
+    qk_nope_head_dim: 128
+    qk_rope_head_dim: 64
+    return_extra_loss: true
+    rms_norm_eps: 1.0e-06
+    rotary_dtype: float32
+    router_dense_type: float32
+    seq_length: 4096
+    softmax_compute_type: float32
+    theta: 10000.0
+    type: DeepseekV3Config
+    use_flash_attention: true
+    use_past: false
+    v_head_dim: 128
+    vocab_size: 129280
+moe_config:
+  aux_loss_factor: 0.05
+  aux_loss_factors:
+  - 0.0001
+  - 0.0
+  - 0.0
+  aux_loss_types:
+  - expert
+  - device
+  - comm
+  balance_via_topk_bias: true
+  capacity_factor: 1.5
+  enable_sdrop: false
+  expert_group_size: 8
+  expert_model_parallel: 1
+  expert_num: 256
+  first_k_dense_replace: 1
+  group_wise_a2a: false
+  moe_intermediate_size: 2048
+  n_group: 8
+  norm_topk_prob: false
+  num_experts_chosen: 8
+  routed_scaling_factor: 2.5
+  routing_policy: TopkRouterV2
+  shared_expert_num: 1
+  topk_bias_update_rate: 0.001
+  topk_group: 4
+  use_fused_ops_topkrouter: true
+  use_gating_sigmoid: true
+  z_loss_factor: 0.0
+only_save_strategy: false
+optimizer:
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  type: AdamW
+output_dir: ./output
+parallel:
+  dataset_strategy:
+  - - 8
+    - 1
+  - - 8
+    - 1
+  - - 8
+    - 1
+  - - 8
+    - 1
+  enable_alltoall: true
+  enable_parallel_optimizer: true
+  full_batch: false
+  gradients_mean: false
+  parallel_mode: 1
+  parallel_optimizer_config:
+    gradient_accumulation_shard: false
+    parallel_optimizer_threshold: 64
+  search_mode: sharding_propagation
+  strategy_ckpt_config:
+    only_trainable_params: false
+    save_file: ./ckpt_strategy.ckpt
+parallel_config:
+  data_parallel: 8
+  expert_parallel: 2
+  gradient_aggregation_group: 4
+  micro_batch_num: 1
+  model_parallel: 8
+  pipeline_stage: 1
+  use_seq_parallel: true
+  vocab_emb_dp: true
+profile: false
+profile_communication: false
+profile_memory: true
+profile_start_step: 1
+profile_stop_step: 10
+recompute_config:
+  mp_comm_recompute: true
+  parallel_optimizer_comm_recompute: true
+  recompute: false
+  recompute_slice_activation: true
+  select_recompute: false
+resume_training: false
+run_mode: train
+runner_config:
+  batch_size: 1
+  epochs: 2
+  sink_mode: true
+  sink_size: 1
+runner_wrapper:
+  scale_sense: 1.0
+  type: MFTrainOneStepCell
+  use_clip_grad: true
+seed: 0
+src_strategy_path_or_dir: ''
+train_dataset:
+  construct_args_key: &id001
+  - input_ids
+  - labels
+  data_loader:
+    config:
+      create_attention_mask: false
+      data_path: &id002
+      - '1'
+      - /home/ma-user/modelarts/user-job-dir/mindformers-dev-25.0.0.B031/wiki_4096_text_document/wiki_4096_text_document
+      eod_mask_loss: false
+      num_dataset_builder_threads: 1
+      random_seed: 1234
+      reset_attention_mask: false
+      reset_position_ids: false
+      seq_length: 4096
+      split: 1, 0, 0
+    datasets_type: GPTDataset
+    shuffle: false
+    sizes: &id003
+    - 5000
+    - 0
+    - 0
+    type: BlendedMegatronDatasetDataLoader
+  drop_remainder: true
+  input_columns: &id004
+  - input_ids
+  - labels
+  - loss_mask
+  - position_ids
+  num_parallel_workers: 8
+  numa_enable: false
+  prefetch_size: 1
+  python_multiprocessing: false
+  repeat: 1
+train_dataset_task:
+  dataset_config:
+    construct_args_key: *id001
+    data_loader:
+      config:
+        create_attention_mask: false
+        data_path: *id002
+        eod_mask_loss: false
+        num_dataset_builder_threads: 1
+        random_seed: 1234
+        reset_attention_mask: false
+        reset_position_ids: false
+        seq_length: 4096
+        split: 1, 0, 0
+      datasets_type: GPTDataset
+      shuffle: false
+      sizes: *id003
+      type: BlendedMegatronDatasetDataLoader
+    drop_remainder: true
+    input_columns: *id004
+    num_parallel_workers: 8
+    numa_enable: false
+    prefetch_size: 1
+    python_multiprocessing: false
+    repeat: 1
+  type: CausalLanguageModelDataset
+trainer:
+  model_name: deepseekV3
+  type: CausalLanguageModelingTrainer
+use_parallel: true

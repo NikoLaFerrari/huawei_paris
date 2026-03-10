@@ -1,0 +1,31 @@
+{
+    "peak": {
+        "Median": 84.34096540483507,
+        "Average": 68.12277033338967
+    },
+    "classified": {
+        "comp": {
+            "Average correlation": 73.3
+        },
+        "dp_wait": {
+            "Average correlation": null
+        },
+        "mp_wait": {
+            "Average correlation": 85.1
+        },
+        "ep_wait": {
+            "Average correlation": 95.8
+        },
+        "cp_wait": {
+            "Average correlation": null
+        },
+        "pp_wait": {
+            "Average correlation": 34.7
+        },
+        "total": {
+            "Average correlation": 37.7
+        }
+    },
+    "last_modification": "2026-02-12 14:04:32.510929+01:00",
+    "zone": "Europe/Paris"
+}

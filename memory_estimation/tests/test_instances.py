@@ -1,0 +1,121 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ============================================================================
+# pylint: skip-file
+"""tests"""
+import pytest
+
+from memory_estimation.estimate_v2 import EvaluatorV2
+
+
+def test_evaluator_instantiation():
+    """basic instance case"""
+    with pytest.raises(TypeError):
+        EvaluatorV2()
+    with pytest.raises(AttributeError):
+        EvaluatorV2("")
+    e = EvaluatorV2("ds_test.yaml")
+    assert e.ccfg is not None
+    assert e.ctx is not None
+
+
+def test_invalid_hook_class_definition():
+    """define hook class"""
+    from memory_estimation.hook_base import MemEvalHook, hook_runner
+
+    MemEvalHook.hook_registry.clear()
+    with pytest.raises(TypeError):
+
+        class Test1(MemEvalHook):
+            pass
+
+    with pytest.raises(TypeError):
+
+        class Test2(MemEvalHook):
+            def run_hooks(e):
+                pass
+
+    with pytest.raises(TypeError):
+
+        class Test3(MemEvalHook):
+            @hook_runner
+            def run_hooks(e):
+                pass
+
+
+def test_evaluator_instantiation_multimodal():
+    """multimodal use case"""
+    from memory_estimation.hook_base import MemEvalHook, hook_runner
+
+    MemEvalHook.hook_registry.clear()
+    with pytest.raises(TypeError):
+        EvaluatorV2("xy_test.json")
+
+    class Uncomplete(MemEvalHook):
+        @hook_runner("deepseekv3")
+        def run_hooks(e):
+            pass
+
+        @hook_runner("siglip")
+        def run_hooks(e):
+            pass
+
+    with pytest.raises(TypeError):
+        EvaluatorV2("xy_test.json", hook_cls=Uncomplete())
+
+    class Complete(Uncomplete):
+        @hook_runner("ppn")
+        def run_hooks(e):
+            pass
+
+        @hook_runner("qformer")
+        def run_hooks(e):
+            pass
+
+    assert EvaluatorV2("xy_test.json", hook_cls=Complete())
+
+
+def test_parsed_strat():
+    """valid parsing"""
+    e = EvaluatorV2("ds_test.yaml")
+    strat = e.get_strategy()
+    assert strat["dp"] > 0
+    assert strat["tp"] > 0
+    assert strat["ep"] > 0
+    assert strat["pp"] > 0
+    assert strat["cp"] > 0
+    assert strat["vpp"] > 0
+    assert 0 < strat["op"] <= strat["dp"] * strat["tp"]
+    assert 0 < strat["ep"] <= strat["dp"] * strat["tp"]
+    assert strat["gbs"] >= strat["dp"]
+    assert strat["sched"]
+
+
+def test_parsed_transformer_hyperparameters():
+    """valid parsing"""
+    e = EvaluatorV2("ds_test.yaml")
+    assert e.get_num_layers() > 0
+    assert e.ccfg.s > 0
+    assert e.ccfg.s_fa > 0
+    assert e.ccfg.a > 0
+    assert e.ccfg.h > 0
+    assert e.ccfg.hff > 0
+    assert e.ccfg.n_attMM > 0
+    assert e.ccfg.n_ffMM > 0
+    assert e.ccfg.bytes_p > 0
+    assert e.ccfg.bytes_compute > 0
+    assert e.ccfg.bytes_softmax > 0
+    assert e.ccfg.bytes_grad > 0
+    assert e.ccfg.bytes_os > 0
+    assert e.ccfg.bytes_norm > 0

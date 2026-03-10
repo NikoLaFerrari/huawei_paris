@@ -1,0 +1,176 @@
+seed: 42
+output_dir: /home/pl/results/results_ds/bench_acfa81ab4956/output
+load_checkpoint: ''
+load_ckpt_format: safetensors
+src_strategy_path_or_dir: ''
+auto_trans_ckpt: false
+only_save_strategy: false
+resume_training: false
+use_parallel: true
+run_mode: train
+train_precision_sync: false
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: deepseekV3
+runner_config:
+  epochs: 1
+  batch_size: 1
+  sink_mode: true
+  sink_size: 1
+optimizer:
+  type: AdamW
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.01
+  swap: true
+lr_schedule:
+  type: ConstantWarmUpLR
+  learning_rate: 2.0e-05
+  lr_end: 2.0e-05
+  warmup_lr_init: 0
+  warmup_steps: 200
+  total_steps: -1
+train_dataset: &id001
+  data_loader:
+    type: BlendedMegatronDatasetDataLoader
+    datasets_type: GPTDataset
+    shuffle: false
+    sizes:
+    - 128000
+    - 0
+    - 0
+    config:
+      seed: 1234
+      split: 1, 0, 0
+      seq_length: 4096
+      eod_mask_loss: false
+      reset_position_ids: false
+      create_attention_mask: false
+      reset_attention_mask: false
+      create_compressed_eod_mask: false
+      eod_pad_length: 128
+      eod: 1
+      pad: -1
+      num_dataset_builder_threads: 1
+      data_path:
+      - '1'
+      - /home/pl/datasets/wiki/mmap_deepseekv3_datasets_text_document
+  num_parallel_workers: 8
+  python_multiprocessing: false
+  drop_remainder: true
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *id001
+context:
+  mode: 0
+  device_target: Ascend
+  max_call_depth: 10000
+  max_device_memory: 56GB
+  mempool_block_size: 56GB
+  memory_optimize_level: O0
+  save_graphs: true
+  save_graphs_path: ./output/graphs
+  jit_config:
+    jit_level: O0
+parallel_config:
+  data_parallel: 4
+  model_parallel: 8
+  pipeline_stage: 2
+  expert_parallel: 32
+  micro_batch_num: 32
+  use_seq_parallel: true
+  gradient_aggregation_group: 4
+micro_batch_interleave_num: 1
+parallel:
+  parallel_mode: 1
+  gradients_mean: false
+  enable_alltoall: true
+  search_mode: sharding_propagation
+  enable_parallel_optimizer: true
+  pipeline_config:
+    pipeline_interleave: true
+    pipeline_scheduler: seqpipe
+  strategy_ckpt_config:
+    save_file: ./ckpt_strategy.ckpt
+    only_trainable_params: false
+  parallel_optimizer_config:
+    gradient_accumulation_shard: false
+    parallel_optimizer_threshold: 64
+    optimizer_weight_shard_size: 64
+recompute_config:
+  recompute: true
+  select_recompute: false
+  mp_comm_recompute: true
+use_legacy: false
+model:
+  model_config:
+    model_type: deepseek_v3
+    architectures:
+    - DeepseekV3ForCausalLM
+    offset:
+    - - 1
+      - 1
+    - - 1
+      - 0
+    pp_interleave_num: 2
+    seq_length: 4096
+    num_hidden_layers: 15
+    vocab_size: 129280
+    hidden_size: 7168
+    intermediate_size: 18432
+    add_bias_linear: false
+    use_flash_attention: true
+    use_attn_mask_compression: true
+    multi_latent_attention: true
+    mla_qkv_concat: false
+    qk_layernorm: true
+    attention_dropout: 0.0
+    hidden_dropout: 0.0
+    params_dtype: float32
+    compute_dtype: bfloat16
+    layernorm_compute_dtype: float32
+    softmax_compute_dtype: float32
+    initializer_range: 0.01
+    num_nextn_predict_layers: 1
+    mtp_loss_factor: 0.3
+    apply_rope_fusion: false
+    bias_swiglu_fusion: false
+    router_dense_type: float32
+    gated_linear_unit: true
+    moe_grouped_gemm: true
+    use_fused_ops_topkrouter: true
+    n_group: 8
+    topk_group: 4
+    use_pad_tokens: false
+    moe_token_dispatcher_type: alltoall
+    moe_intermediate_size: 2048
+    moe_router_load_balancing_type: seq_aux_loss
+    moe_aux_loss_coeff: 0.0001
+    moe_token_drop_policy: false
+    moe_router_enable_expert_bias: true
+    moe_router_bias_update_rate: 0.0001
+callbacks:
+- type: MFLossMonitor
+- type: TopkBiasBalanceCallback
+- type: CheckpointMonitor
+  prefix: deepseekv3
+  save_checkpoint_steps: 5000
+  keep_checkpoint_max: 1
+  integrated_save: false
+  async_save: false
+  checkpoint_format: safetensors
+- type: TrainCallBack
+  stop_step: 10
+runner_wrapper:
+  type: MFTrainOneStepCell
+  scale_sense: 1.0
+  use_clip_grad: true
+profile: true
+profile_start_step: 8
+profile_stop_step: 8
+init_start_profile: true
+profile_communication: false
+profile_memory: false
+

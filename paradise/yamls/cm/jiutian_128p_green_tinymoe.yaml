@@ -1,0 +1,255 @@
+seed: 0
+output_dir: './output' # path to save checkpoint/strategy
+#load_checkpoint: ''
+load_checkpoint: ''
+resume_training: False #'cm_230b_rank_0-72919_1.safetensors' #True #'cm_230b_rank_0_21-52919_1.safetensors' #'cm_230b_rank_0_18-55899_1.safetensors' #True #'cm_230b_rank_0-5000_1.safetensors' #True #False
+auto_trans_ckpt: False #True #False  # If true, auto transform load_checkpoint to load in distributed model
+load_ckpt_format: 'safetensors'
+remove_redundancy: True #False #True
+only_save_strategy: False 
+run_mode: 'train'
+check_for_nan_in_loss_and_grad: True
+#data_skip_steps: 500
+
+# trainer config
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: 'cm_230b'
+
+# if True, do evaluate during the training process. if false, do nothing.
+# note that the task trainer should support _evaluate_in_training function.
+do_eval: False
+eval_step_interval: -1        # num of step intervals between each eval, -1 means no step end eval.
+eval_epoch_interval: 50        # num of epoch intervals between each eval, 1 means eval on every epoch end.
+
+# runner config
+runner_config:
+  epochs: 1
+  batch_size: 1
+  sink_mode: True
+  sink_size: 1
+
+# wrapper cell config
+runner_wrapper:
+  type: MFTrainOneStepCell
+  use_clip_grad: True
+  scale_sense: 1
+
+# optimizer
+optimizer:
+  type: AdamW
+  betas: [0.9, 0.95]
+  eps: 1.e-8
+  learning_rate: 1.5e-4 #2.4e-4
+  weight_decay: 0.1
+
+# lr schedule
+lr_schedule:
+  type: CosineWithWarmUpLR
+  learning_rate: 1.5e-4 #2.4e-4
+  lr_end: 2.4e-5 #2.4e-4
+  warmup_lr_init: 0
+  warmup_steps: 2000
+  total_steps: -1 # -1 means it will load the total steps of the dataset
+
+# dataset
+train_dataset: &train_dataset
+  data_loader:
+    type: MindDataset
+    dataset_dir: /mnt/nvme_1_3_4/philippe/cm/wiki103-4k #"/home/liuluobin/dataset/wiki103-4k"
+    shuffle: False
+    #save_indices_npz_path: './output/dataset_deepseek_8k_0124.npz'
+    
+    #shuffle: False
+  input_columns: ["input_ids"]  # "input_ids" , labels are used in instruction finetune.
+  output_columns: ["input_ids"]
+  #eod_token_id: [159251, 159252]
+  num_samples: 512
+  num_parallel_workers: 8
+  python_multiprocessing: False
+  drop_remainder: True
+  batch_size: 4
+  repeat: 1
+  numa_enable: False
+  prefetch_size: 1
+
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *train_dataset
+
+
+use_parallel: True
+# parallel context config
+parallel:
+  parallel_mode: 1 # 0-data parallel, 1-semi-auto parallel, 2-auto parallel, 3-hybrid parallel
+  gradients_mean: False
+  enable_alltoall: True 
+  full_batch: False 
+  dataset_strategy: [[4, 1]] #[[64, 1], [64, 1]]    # add, =dp
+  search_mode: "sharding_propagation"
+  enable_parallel_optimizer: True
+  strategy_ckpt_save_file: "./ckpt_strategy.ckpt"
+  pipeline_config:
+    pipeline_interleave: True
+    pipeline_scheduler: '1f1b'
+  parallel_optimizer_config:
+    gradient_accumulation_shard: False
+    parallel_optimizer_threshold: 64
+    optimizer_weight_shard_size: 4
+  dump_device_local_norm: True
+
+# default parallel of device num = 8 for Atlas 800T A2
+parallel_config:
+  data_parallel: 4
+  model_parallel: 2
+  pipeline_stage: 16
+  expert_parallel: 8 # 8
+  use_seq_parallel: True
+  #optimizer_shard: True  # optimizer_shard == enable_parallel_optimizer
+  micro_batch_num: &micro_batch_num 48 #16 # 96 #192 #144 #96 #48 #32 2304
+  vocab_emb_dp: True
+  gradient_aggregation_group: 8
+# The size of micro_batch must be greater than or equal to stage_num(pipeline_stage).
+# when model parallel is greater than 1, we can set micro_batch_interleave_num=2, that may accelerate the train process.
+micro_batch_interleave_num: 1
+
+# recompute config
+recompute_config:
+  recompute: True 
+  select_recompute: False
+  parallel_optimizer_comm_recompute: False
+  mp_comm_recompute: False
+  recompute_slice_activation: False
+
+# mindspore context init config
+context:
+  jit_config:
+    jit_level: "O1"
+  memory_optimize_level: "O0" #"O0"
+  mode: 0 #0--Graph Mode; 1--Pynative Mode
+  device_target: "Ascend"
+  max_call_depth: 10000
+  max_device_memory: "54GB"
+  mempool_block_size: "54GB"
+  affinity_cpu_list: None
+  ascend_config:
+    parallel_speed_up_json_path: "/mnt/nvme_1_3_4/philippe/cm/mindformers_r150_release/research/parallel_speed_up.json" #"/home/liuluobin/moe/jiutian_243b/mindformers_r150_release/research/parallel_speed_up.json"
+  #graph_kernel_flags: "--opt_level=2 --enable_cluster_ops=MatMul,BatchMatMul,Reshape --online_tuning=1"
+  graph_kernel_flags: "--enable_cluster_ops=MatMul,BatchMatMul,Reshape --online_tuning=1"
+  save_graphs: False #True
+  save_graphs_path: "./output/graphs"
+  device_id: 0
+
+# model config
+model:
+  model_config:
+    type: LlamaConfig
+    #auto_register: jiutian_config.JiuTianConfig
+    batch_size: 1
+    seq_length: 4096
+    hidden_size: 5120
+    num_layers: &num_layers 70
+    num_heads: 64
+    n_kv_heads: 8
+    vocab_size: 152064
+    #intermediate_size: 12288
+    #qkv_has_bias: True
+    rms_norm_eps: 1.0e-6
+    theta: 10000.0
+    max_position_embedding: 131072
+    #emb_dropout_prob: 0.0
+    #eos_token_id: 151643
+   # pad_token_id: 151643
+    compute_dtype: "bfloat16"
+    layernorm_compute_type: "float32" #"bfloat16"
+    residual_dtype: "float32"
+    softmax_compute_type: "float32" #"bfloat16"
+    rotary_dtype: "float32"
+    param_init_type: "float32"
+    router_dense_type: "float32"
+    use_flash_attention: True
+    use_past: False
+    #fine_grain_interleave: 1
+    #offset: [2,0,0,0,0,0,0] # 
+    offset: [[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0],
+            [0,0,0,0, 0,0,0,1, 1,1,1,1, 1,1,0,1],
+            [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,0,1,0]]
+    checkpoint_name_or_path: ""    
+    is_dynamic: False
+    qkv_concat: False #True
+    init_method_std: 0.02
+    return_extra_loss: True
+    #mtp_depth: &mtp_depth 1
+    #mtp_loss_factor: 0.3
+    input_sliced_sig: True
+    pp_interleave_num: 3
+  arch:
+    type: LlamaForCausalLM
+
+moe_config:
+  expert_model_parallel: 1    # add
+  moe_intermediate_size: 1728 #2048 #1536 #1728 #3456
+  expert_num: &expert_num 128 #160 #128 #64
+  num_experts_chosen: 8 #16 #8
+  #shared_expert_num: 2
+  capacity_factor: &capacity_factor 1.5
+  routing_policy: 'TopkRouterV2'
+  enable_sdrop: False
+  use_fused_ops_topkrouter: True
+  balance_via_topk_bias: &balance_via_topk_bias False
+  topk_bias_update_rate: &topk_bias_update_rate 0.001
+  first_k_dense_replace: 0
+  aux_loss_factors: [0.01] #[0.001]
+  aux_loss_types: ["expert"]
+  #routed_scaling_factor: 2.5 #
+  #use_gating_sigmoid: True
+  norm_topk_prob: True 
+  #comp_comm_parallel: True
+  #comp_comm_parallel_degree: 2
+  callback_moe_droprate: True
+  use_gmm: False #True
+  #enable_gmm_safe_tokens: True
+  enable_deredundency: True
+  
+
+# callbacks
+callbacks:
+  - type: MFLossMonitor
+    per_print_times: 10
+  # - type: CheckpointMonitor
+  #   prefix: "cm_230b"
+  #   save_checkpoint_steps: 200
+  #   keep_checkpoint_max: 100
+  #   save_network_params: False
+  #   integrated_save: False
+  #   async_save: False
+  #   checkpoint_format: safetensors
+  #   remove_redundancy: True
+  # - type: ObsMonitor
+  # - type: MoEDropRateCallback
+  #   expert_num: *expert_num
+  #   capacity_factor: *capacity_factor
+  #   mtp_depth: 0 #*mtp_depth
+  #   num_layers: *num_layers
+  #   micro_batch_num: *micro_batch_num
+
+processor:
+  return_tensors: ms
+  tokenizer:
+    model_max_length: 32768
+    vocab_file: "path/vocab.json" # can set in run_command --vocab_file
+    merges_file: "path/merges.txt" # can set in run_command --merges_file
+    unk_token: "<|endoftext|>"
+    eos_token: "<|endoftext|>"
+    pad_token: "<|endoftext|>"
+    type: Qwen2Tokenizer
+  type: Qwen2Processor
+
+
+profile: False 
+profile_start_step: 5    # modify, 1
+profile_stop_step: 5
+init_start_profile: False
+profile_communication: False
+profile_memory: False
+

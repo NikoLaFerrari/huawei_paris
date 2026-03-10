@@ -1,0 +1,10 @@
+ModelParameters,1669
+ExpModelParameters,0
+OptimizerStates,6676
+AccumulatedGradients,1669
+Attn,4483
+FFn,19264
+TP/DP/CP AllGather,0
+EP Gather,0
+Static,10054
+Dynamic,87853

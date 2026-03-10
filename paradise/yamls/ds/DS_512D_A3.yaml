@@ -1,0 +1,234 @@
+seed: 0
+output_dir: './output' # path to save checkpoint/strategy
+# load_checkpoint: ''
+src_strategy_path_or_dir: ''
+auto_trans_ckpt: False  # If true, auto transform load_checkpoint to load in distributed model
+only_save_strategy: False
+resume_training: False
+use_parallel: True
+run_mode: 'train'
+
+# trainer config
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: 'deepseekV3'
+
+# runner config
+runner_config:
+  epochs: 10
+  batch_size: 1
+  sink_mode: True
+  sink_size: 1
+
+# optimizer
+optimizer:
+  type: AdamW
+  betas: [0.9, 0.95]
+  eps: 1.e-8
+
+# lr schedule
+lr_schedule:
+  type: ConstantWarmUpLR
+  learning_rate: 2.2e-4
+  warmup_steps: 20                                    # 修改为20
+  total_steps: -1
+
+# dataset
+train_dataset: &train_dataset
+  data_loader:
+    type: BlendedMegatronDatasetDataLoader
+    datasets_type: "GPTDataset"
+    sizes:
+      - 260000  # 训练集大小，数值为：global_batch_size * steps * epoch
+      - 0    # 验证集大小，只能为0
+      - 0    # 验证集大小，只能为0
+    config:
+      type: GPTDatasetConfig
+      create_compressed_eod_mask: &eod_compress True
+      eod_pad_length: 13 #256
+      seed: 1234
+      seq_length: &seq_length 4096 # 可以根据实际业务需要进行修改
+      split: "1, 0, 0"
+      reset_position_ids: True    # 是否重新生成 position_ids
+      reset_attention_mask: True  # 是否启用 attention_mask
+      eod_mask_loss: True         # 是否启用 eod_mask
+      num_dataset_builder_threads: 1
+      create_attention_mask: False # 是否生成 attention_mask
+      eod: 100001 # 配置的 eod token id
+      pad: -1     # 配置的 pad token id
+      data_path:
+        - "1" # 表示以 100% 的比例加载该权重
+        - "/mnt/nvme_1_3_4/j00872247/dataset/wiki_4096_text_document"
+      shuffle: False
+  input_columns: ["input_ids", "labels", "loss_mask", "position_ids", "actual_seq_len"] # 传入参数定义
+  output_columns: ["input_ids", "labels", "position_ids", "actual_seq_len"]
+  construct_args_key: ["input_ids", "labels", "position_ids", "actual_seq_len"]
+  eod_reset: False
+  num_parallel_workers: 8
+  python_multiprocessing: False
+  drop_remainder: True
+  batch_size: 1
+  repeat: 1
+  numa_enable: False
+  prefetch_size: 1
+  seed: 1234 # 与 Megatron 中 llama3 使用的默认 seed 对齐
+  
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *train_dataset
+
+# mindspore context init config
+context:
+  mode: 0 #0--Graph Mode; 1--Pynative Mode
+  graph_kernel_flags: "--enable_pass=grouped_matmul_assignadd_fusion --enable_cluster_ops=MatMul,BatchMatMul,Reshape --online_tuning=1" 
+  device_target: "Ascend"
+  max_call_depth: 10000
+  max_device_memory: "56GB"
+  save_graphs: False
+  save_graphs_path: "./graph"
+  jit_config:
+    jit_level: "O1"
+  enable_interleave_parallel_branch: True
+  ascend_config:
+    parallel_speed_up_json_path: "/mnt/nvme_1_3_4/j00872247/mindformers-tnd/research/deepseek3/parallel_speed_up_vpp.json"
+
+# parallel config for device num = 1024
+parallel_config:
+  data_parallel: &dp 64 #32                                    # 修改为2
+  model_parallel: 4                                   # 修改为2
+  pipeline_stage: 2 #4 #2                                   # 修改为2
+  expert_parallel: 128 #64                                  # 修改为2
+  micro_batch_num: &micro_batch_num 120 #120                 # 修改为4
+  vocab_emb_dp: True
+  use_seq_parallel: True
+  gradient_aggregation_group: 4
+# when model parallel is greater than 1, we can set micro_batch_interleave_num=2, that may accelerate the train process.
+micro_batch_interleave_num: 1
+
+# parallel context config
+parallel:
+  parallel_mode: 1 # 0-data parallel, 1-semi-auto parallel, 2-auto parallel, 3-hybrid parallel
+  gradients_mean: False
+  enable_alltoall: True
+  full_batch: False
+  dataset_strategy: [[*dp, 1], [*dp, 1], [*dp, 1], [*dp, 1]]
+  search_mode: "sharding_propagation"
+  enable_parallel_optimizer: True
+  strategy_ckpt_save_file: "./ckpt_strategy.ckpt"
+  pipeline_config:
+    pipeline_interleave: True
+    pipeline_scheduler: 'zero_bubble_v'
+  parallel_optimizer_config:
+    gradient_accumulation_shard: False
+    parallel_optimizer_threshold: 64
+micro_batch_interleave_num: 1
+recompute_config:
+  # recompute: [[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 2, 2], [0, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]]
+  recompute: True #[[15, 15], [15, 15]]
+  parallel_optimizer_comm_recompute: False
+  mp_comm_recompute: False #True
+  recompute_slice_activation: False #True
+
+# model config
+model:
+  model_config:
+    type: DeepseekV3Config
+    auto_register: deepseek3_config.DeepseekV3Config
+    batch_size: 1 # add for increase predict
+    seq_length: *seq_length
+    pp_interleave_num: 2
+    hidden_size: 7168                                 # 修改为2048
+    num_layers: &num_layers 61 #61                         # 修改为3
+    num_heads: 128                                      # 修改为8
+    max_position_embeddings: 163840
+    intermediate_size: 18432                           # 修改为6144
+    kv_lora_rank: 512
+    n_kv_heads: 128
+    q_lora_rank: 1536
+    qk_rope_head_dim: 64
+    v_head_dim: 128
+    qk_nope_head_dim: 128
+    vocab_size: 129280
+    multiple_of: 256
+    rms_norm_eps: 1.0e-6
+    bos_token_id: 100000
+    eos_token_id: 100001
+    pad_token_id: 100001
+    ignore_token_id: -100
+    compute_dtype: "bfloat16"
+    layernorm_compute_type: "float32"
+    softmax_compute_type: "float32"
+    rotary_dtype: "float32"
+    router_dense_type: "float32"
+    param_init_type: "float32"
+    use_past: False
+    extend_method: "None"
+    use_flash_attention: True
+    # offset: [[2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1], [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]
+    offset: [[2, 1], [ -1, 0]]
+    checkpoint_name_or_path: ""
+    repetition_penalty: 1
+    max_decode_length: 1024
+    top_k: 5
+    top_p: 1
+    theta: 10000.0
+    return_extra_loss: False
+    mtp_depth: &mtp_depth 1
+    mtp_loss_factor: 0.3
+    input_sliced_sig: True
+    use_force_expert_balance: True
+  arch:
+    type: DeepseekV3ForCausalLM
+    auto_register: deepseek3_model.DeepseekV3ForCausalLM #deepseek3.DeepseekV3ForCausalLM
+
+#moe
+moe_config:
+  moe_shared_expert_overlap: True
+  expert_num: &expert_num 256                          # 修改为16
+  expert_group_size: 8
+  capacity_factor: &capacity_factor 1.0
+  aux_loss_factor: 0.05
+  num_experts_chosen: 8
+  routing_policy: "TopkRouterV2"
+  enable_sdrop: False
+  balance_via_topk_bias: &balance_via_topk_bias False #True
+  topk_bias_update_rate: &topk_bias_update_rate 0.0001
+  use_fused_ops_topkrouter: True
+  group_wise_a2a: False
+  shared_expert_num: 1
+  routed_scaling_factor: 2.5
+  norm_topk_prob: True
+  first_k_dense_replace: 3                            # 修改为1
+  moe_intermediate_size: 2048
+  topk_group: 4
+  n_group: 8
+  aux_loss_factors: [0.001, 0., 0.]
+  aux_loss_types: ["expert", "device", "comm"]
+  z_loss_factor: 0.0
+  expert_model_parallel: 1
+  use_gating_sigmoid: False
+  use_gmm: True
+  enable_gmm_safe_tokens: False
+
+# callbacks
+callbacks:
+  - type: MFLossMonitor
+    per_print_times: 1
+  - type: TrainCallBack
+    stop_step: 2
+  
+# wrapper cell config
+runner_wrapper:
+  type: MFTrainOneStepCell
+  scale_sense: 1.0
+  use_clip_grad: True
+
+profile: False
+profile_start_step: 10
+profile_stop_step: 10
+init_start_profile: False
+profile_communication: False
+profile_memory: True
+layer_scale: False
+layer_decay: 0.65
+lr_scale_factor: 256

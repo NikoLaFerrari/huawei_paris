@@ -1,0 +1,742 @@
+# llama2-70b model training configuration on Atlas 800T A2 with auto parallel mode.
+
+# It is suggested to use this configuration file for MindSpore r2.2 and versions later than r2.2.
+# For MindSpore r2.1 and versions earlier than r2.1, please use the configuration file without "auto_parallel" suffix.
+
+seed: 0
+output_dir: '/job/output/' # path to save checkpoint/strategy
+#load_checkpoint: '/job/output/dst_checkpoint'
+#load_checkpoint: '/job/resume_ckpt' 
+load_checkpoint: '' #'/job/output/checkpoint' #'/job/load_checkpoint/' #'/job/output/checkpoint_network' #'/job/output/checkpoint' 
+src_strategy_path_or_dir: ''
+auto_trans_ckpt: False  # If true, auto transform load_checkpoint to load in distributed model
+only_save_strategy: False
+resume_training: False
+#resume_by_last_timestamp_ckpt: True
+run_mode: 'train'
+#train_precision_sync: 1
+
+# trainer config
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: 'llama2_70b'
+# if True, do evaluate during the training process. if false, do nothing.
+# note that the task trainer should support _evaluate_in_training function.
+do_eval: False
+eval_step_interval: -1        # num of step intervals between each eval, -1 means no step end eval.
+eval_epoch_interval: 50        # num of epoch intervals between each eval, 1 means eval on every epoch end.
+
+# runner config
+runner_config:
+  epochs: 1
+  batch_size: 1
+  # global batch size for devices in a single stage under auto parallel.
+  # If pipeline is enabled, the global batch size is batch_size * micro batch.
+  sink_mode: True
+  sink_size: 1
+  gradient_accumulation_steps: 1
+  #append_skip_steps: 13050
+# append_skip_steps: 0 # 500
+# optimizer
+optimizer:
+  type: AdamW #FP32StateAdamWeightDecay
+  betas: [0.9, 0.95]
+  eps: 1.e-8 # 1e-8
+  learning_rate: 5.e-6 #1.e-5 #1.6e-5 #2.e-5 #1.e-5  
+  weight_decay: 0.1
+
+# lr sechdule
+lr_schedule:
+  type: CosineWithWarmUpLR
+  learning_rate: 5.e-6 #1.e-5 #1.6e-5 #2.e-5    #1.e-5
+  lr_end: 1.e-6 #0
+  #warmup_ratio: 0.03
+  warmup_steps: 2000 #2000 300
+  total_steps: -1 # -1 means it will load the total steps of the dataset
+
+# dataset
+train_dataset: &train_dataset
+  data_loader:
+    type: MultiSourceDataLoader
+    data_source_type: 'random_access'
+    dataset_dir: "/job/data/"
+    load_indices_npz_path: '/job/output/dataset_deepseekv3_new_data_1.3T_0513.npz'
+    #save_indices_npz_path: '/job/output/dataset_deepseekv3_new_data_1.3T_0320.npz'
+    nums_per_dataset: [618896, 952148, 476074, 952148, 952148, 952148, 952148, 555419, 952148, 729980, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 603027, 952148, 952148, 856933, 952148, 952148, 952148, 952148, 349121, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 952148, 666503, 952148, 952148, 952148, 952148, 952148, 253906, 952148, 856933, 952148, 952148, 904541, 3427734, 3427734, 3427734, 1713867, 1713867, 1713867, 2142333, 2142333, 428466, 2142333, 3173828, 1586914, 3649902, 7458496, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1317138, 1983642, 6585693, 2856445, 3665771, 1364746, 1364746, 2713623, 7204589, 2713623, 1507568, 79345, 2221679, 1110839, 444335, 79345, 698242, 349121, 1586914, 793457, 793457, 1586914, 2491455, 4967041, 1221923, 2427978, 1586914, 3173828]
+    sub_data_loader_args:
+      stage: "train"
+      column_names: [ "input_ids"]
+    sub_data_loader:
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_1"
+        id: 1_doc_qw_v1_1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_2"
+        id: 1_doc_qw_v1_2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_3"
+        id: 1_doc_qw_v1_3
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_4"
+        id: 1_doc_qw_v1_4
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_5"
+        id: 1_doc_qw_v1_5
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_6"
+        id: 1_doc_qw_v1_6
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_7"
+        id: 1_doc_qw_v1_7
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_8"
+        id: 1_doc_qw_v1_8
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_9"
+        id: 1_doc_qw_v1_9
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_10"
+        id: 1_doc_qw_v1_10
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_11"
+        id: 1_doc_qw_v1_11
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_12"
+        id: 1_doc_qw_v1_12
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_13"
+        id: 1_doc_qw_v1_13
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_14"
+        id: 1_doc_qw_v1_14
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_15"
+        id: 1_doc_qw_v1_15
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_16"
+        id: 1_doc_qw_v1_16
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_17"
+        id: 1_doc_qw_v1_17
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_18"
+        id: 1_doc_qw_v1_18
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_19"
+        id: 1_doc_qw_v1_19
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_20"
+        id: 1_doc_qw_v1_20
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_21"
+        id: 1_doc_qw_v1_21
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_22"
+        id: 1_doc_qw_v1_22
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_23"
+        id: 1_doc_qw_v1_23
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_24"
+        id: 1_doc_qw_v1_24
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_25"
+        id: 1_doc_qw_v1_25
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_26"
+        id: 1_doc_qw_v1_26
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_27"
+        id: 1_doc_qw_v1_27
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_28"
+        id: 1_doc_qw_v1_28
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_29"
+        id: 1_doc_qw_v1_29
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_30"
+        id: 1_doc_qw_v1_30
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_31"
+        id: 1_doc_qw_v1_31
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_33"
+        id: 1_doc_qw_v1_33
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_34"
+        id: 1_doc_qw_v1_34
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_35"
+        id: 1_doc_qw_v1_35
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_36"
+        id: 1_doc_qw_v1_36
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_37"
+        id: 1_doc_qw_v1_37
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_38"
+        id: 1_doc_qw_v1_38
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_39"
+        id: 1_doc_qw_v1_39
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_40"
+        id: 1_doc_qw_v1_40
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_41"
+        id: 1_doc_qw_v1_41
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_42"
+        id: 1_doc_qw_v1_42
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_43"
+        id: 1_doc_qw_v1_43
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_44"
+        id: 1_doc_qw_v1_44
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_45"
+        id: 1_doc_qw_v1_45
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_46"
+        id: 1_doc_qw_v1_46
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_47"
+        id: 1_doc_qw_v1_47
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_48"
+        id: 1_doc_qw_v1_48
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_49"
+        id: 1_doc_qw_v1_49
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_50"
+        id: 1_doc_qw_v1_50
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_51"
+        id: 1_doc_qw_v1_51
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_52"
+        id: 1_doc_qw_v1_52
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/1_doc_qw_v1_53"
+        id: 1_doc_qw_v1_53
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/3_doc_qw_v1"
+        id: 3_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/4_doc_qw_v1"
+        id: 4_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/5_doc_qw_v1"
+        id: 5_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/6_doc_qw_v1_1"
+        id: 6_doc_qw_v1_1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/6_doc_qw_v1_2"
+        id: 6_doc_qw_v1_2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/6_doc_qw_v1_3"
+        id: 6_doc_qw_v1_3
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/7_doc_qw_v1"
+        id: 7_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/8_doc_qw_v1"
+        id: 8_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/9_doc_qw_v1"
+        id: 9_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/10_doc_qw_v2"
+        id: 10_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/11_doc_qw_v1_1"
+        id: 11_doc_qw_v1_1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/12_doc_qw_v1_1"
+        id: 12_doc_qw_v1_1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/13_doc_qw_v2"
+        id: 13_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/14_doc_qw_v2"
+        id: 14_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_6"
+        id: code_qw_v1_6
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_7"
+        id: code_qw_v1_7
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_8"
+        id: code_qw_v1_8
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_9"
+        id: code_qw_v1_9
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_10"
+        id: code_qw_v1_10
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_11"
+        id: code_qw_v1_11
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_12"
+        id: code_qw_v1_12
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_13"
+        id: code_qw_v1_13
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_14"
+        id: code_qw_v1_14
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_15"
+        id: code_qw_v1_15
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_16"
+        id: code_qw_v1_16
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_17"
+        id: code_qw_v1_17
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_18"
+        id: code_qw_v1_18
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_19"
+        id: code_qw_v1_19
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_20"
+        id: code_qw_v1_20
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/code_qw_v1_21"
+        id: code_qw_v1_21
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/15_doc_qw_v2"
+        id: 15_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/16_doc_qw_v1"
+        id: 16_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/17_doc_qw_v1"
+        id: 17_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/multi_turn_dialog_en"
+        id: multi_turn_dialog_en
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/18_doc_qw_v2"
+        id: 18_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/22_doc_qw_v1"
+        id: 22_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/math-zh-1"
+        id: math-zh-1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/math-zh-2"
+        id: math-zh-2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/25_doc_qw_v2"
+        id: 25_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/26_doc_qw_v2"
+        id: 26_doc_qw_v2
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/zh-math-com-add-v1"
+        id: zh-math-com-add-v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/math-zh-3"
+        id: math-zh-3
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/finemath_tokenize_merge"
+        id: finemath_tokenize_merge
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/en-math-exam-add-v1"
+        id: en-math-exam-add-v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/domain"
+        id: domain
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/30_doc_qw_v1"
+        id: 30_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/31_doc_qw_v1"
+        id: 31_doc_qw_v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/new-qa"
+        id: new-qa
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/zh-qa"
+        id: zh-qa
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/en-qa"
+        id: en-qa
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/zh-knowledge-v3"
+        id: zh-knowledge-v3
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/en-knowledge-v3"
+        id: en-knowledge-v3
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/zh-reasoning-v1"
+        id: zh-reasoning-v1
+        gather: false
+      - type: CMDataLoader
+        sub_dataset_dir: "/job/data/qa-logic-en"
+        id: qa-logic-en
+        gather: false
+    shuffle: files
+    shuffle_buffer_size: 1024
+  input_columns: ["input_ids"]  # "input_ids", "labels" , labels are used in instruction finetune.
+  output_columns: ["input_ids", "position_ids", "attention_mask"]
+  construct_args_key: ["input_ids","position_ids", "attention_mask"]
+  eod_reset: False #True
+  #eod_token_id: [159251, 159252]
+  num_parallel_workers: 8
+  python_multiprocessing: False
+  drop_remainder: True
+  batch_size: 4
+  repeat: 1
+  numa_enable: False
+  prefetch_size: 1
+
+
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *train_dataset
+
+# eval dataset
+eval_dataset: &eval_dataset
+  data_loader:
+    type: MindDataset
+    dataset_dir: ""
+    shuffle: False
+  input_columns: ["input_ids"]
+  num_parallel_workers: 8
+  python_multiprocessing: False
+  drop_remainder: False
+  repeat: 1
+  numa_enable: False
+  prefetch_size: 1
+eval_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *eval_dataset
+
+use_parallel: True
+# parallel context config
+parallel_config:
+  data_parallel: 8    # 512 #7 #15 #d
+  model_parallel: 8 #16 #8
+  pipeline_stage: 16 #16 #8
+  expert_parallel: 8 #8
+  use_seq_parallel: True
+  micro_batch_num: 64 #64 #4 #8 #4 #16
+  vocab_emb_dp: True
+  gradient_aggregation_group: 4 #8 
+# when model parallel is greater than 1, we can set micro_batch_interleave_num=2, that may accelerate the train process.
+micro_batch_interleave_num: 1 #2
+
+parallel:
+  parallel_mode: 1 # 0-data parallel, 1-semi-auto parallel, 2-auto parallel, 3-hybrid parallel
+  gradients_mean: False
+  enable_alltoall: True
+  # use for debug
+  #dump_local_norm: True
+  dump_device_local_norm: True
+  #full_batch: True
+  full_batch: False    # modify, True
+  dataset_strategy: [[8, 1]]    # add, =dp
+  search_mode: "sharding_propagation"
+  enable_parallel_optimizer: False #True
+  strategy_ckpt_config:
+    save_file: "./ckpt_strategy.ckpt"
+    only_trainable_params: False
+  #strategy_ckpt_save_file: "./ckpt_strategy.ckpt"
+  parallel_optimizer_config:
+    gradient_accumulation_shard: False
+    parallel_optimizer_threshold: 64
+    optimizer_weight_shard_size: 2    # add
+# default parallel of device num = 32 for Atlas 800T A2
+# 256*8卡集群，使用240*8卡，冗余16*8卡
+#parallel_config:
+#  data_parallel: 64 #7 #15 #d
+#  model_parallel: 8 #16 #8
+#  pipeline_stage: 8 #16 #8
+#  use_seq_parallel: True
+#  micro_batch_num: 16 #4 #8 #4 #16
+#  vocab_emb_dp: True
+#  gradient_aggregation_group: 8 #8 
+#  gradient_aggregation_group: 8 #8 
+#  gradient_aggregation_group: 8 #8 
+# when model parallel is greater than 1, we can set micro_batch_interleave_num=2, that may accelerate the train process.
+#micro_batch_interleave_num: 1
+
+# recompute config
+recompute_config:
+  recompute: True #[5,4,4,4,4,4,4,4,4,3,3,2,2,1,1,1] # [9,8,8,9,8,7,6,0] # [10,9,9,10,10,10,10,5]
+  #recompute: [9,8,8,8,7,7,4,1] # [9,8,8,9,8,7,6,0] # [10,9,9,10,10,10,10,5]
+  select_recompute: False #True #True 
+  #select_comm_recompute: 
+  #  'feed_forward\.stride_slice_outer_dp_mp': [10,10,10,10,11,11,11,11]
+  parallel_optimizer_comm_recompute: False
+  mp_comm_recompute: True #False
+  recompute_slice_activation: True #False
+
+# callbacks
+callbacks:
+  - type: MFLossMonitor
+  - type: CheckpointMonitor
+    prefix: "jt-16x75b-moe"
+    save_checkpoint_steps: 200
+    integrated_save: False
+    async_save: False #True
+    remove_redundancy: True
+    checkpoint_format: "safetensors"
+    keep_checkpoint_max: 5
+#   - type: ObsMonitor
+
+
+
+
+# mindspore context init config
+context:
+  mode: 0 #0--Graph Mode; 1--Pynative Mode
+  device_target: "Ascend"
+  enable_graph_kernel: False
+  #graph_kernel_flags: "--disable_expand_ops=Softmax,Dropout --enable_parallel_fusion=true --reduce_fuse_depth=8 --enable_auto_tensor_inplace=true"
+  max_call_depth: 10000
+  max_device_memory: "54GB"
+  save_graphs: False  ##save_graphs: False
+  save_graphs_path: "/job/output/mf13_75b_1024p_graph/"
+  device_id: 0
+  #deterministic: "ON"
+  # set timeout, defualt is 900
+  op_timeout: 3600
+  #runtime_num_threads: 1 ################# graph cache  ############## enable_compile_cache: True  compile_cache_path: "/job/cache/"
+  jit_config:
+    jit_level: "O1"
+  memory_optimize_level: "O0"
+  mempool_block_size: "54GB"
+  graph_kernel_flags: "--opt_level=2 --enable_cluster_ops=MatMul,BatchMatMul,Reshape --online_tuning=1"
+  ascend_config:
+    parallel_speed_up_json_path: "/job/code/cm_1000b/parallel_speed_up_16x75b.json"
+
+# model config
+model:
+  model_config:
+    type: LlamaConfig
+    batch_size: 1 # add for increase predict
+    seq_length: 8192
+    hidden_size: 8192 #12288 #8192
+    num_layers: 80 #84 #96
+    num_heads: 64 #96 #64
+    n_kv_heads: 8
+    qkv_has_bias: True
+    vocab_size:  159744 #32000
+    multiple_of: 256
+    intermediate_size: 29184
+    # ffn_dim_multiplier: 1.0
+    # 公式：256*(((2*hidden_size*4/3)+256-1)//256)  # ffn_dim_multiplier: 1.0
+    # n_kv_heads: 8   # 需明确，不使用时和num_heads保持一致 query attention
+    rms_norm_eps: 1.0e-6 # 1.0e-6
+    theta: 500000
+    bos_token_id: 1
+    eos_token_id: 2
+    pad_token_id: -1  # 0->-1  # 看数据处理给的pad id
+    eod_reset: True #eod
+    eod_token_id: [159251, 159252]
+    ignore_token_id: -100
+    compute_dtype: "bfloat16" #"float16"
+    layernorm_compute_type: "float32"
+    softmax_compute_type: "float32" #"float16"
+    rotary_dtype: "float32" # "float16"
+    param_init_type: "float32"
+    res_dtype: "float32"
+    use_past: False
+    scale_factor: 1.0
+    extend_method: "None" # support "None", "PI", "NTK"
+    use_flash_attention: True # FA can accelerate training or finetune
+
+    #offset: [[0,0,0,0,0,0,0,1],[1,1,1,1,1,1,1,0]] #[-2, -1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1] #0
+    #offset: [[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,1,1,1,1,1,0]] #[-2, -1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1] #0
+    #offset: [-2,1,1,1,1,1,1,0,0,1,1,1,1,1,1,-2]  #[-1, 1, 0, 0, 0, 0, 1, -1]
+    offset: 0 #[0,0,0,0,0,1,1,2] # [0,0,0,1,1,1,1,0]
+    # pp_interleave_num: 2 #4
+    use_past_shard: False
+    checkpoint_name_or_path: "jiutian-75b-moe"
+    repetition_penalty: 1
+    max_decode_length: 512
+    top_k: 3
+    top_p: 1
+    do_sample: False
+  arch:
+    type: LlamaForCausalLM
+
+moe_config:
+  expert_num: 16 # The number of experts employed. Default: 1
+  capacity_factor: 2 #1.1 #  Default: 1.1
+  aux_loss_factor: 0.05 # Default: 0.05
+  num_experts_chosen: 2 #Default: 1
+  # expert_group_size: # used in AUTO_PARALLEL
+  comp_comm_parallel: True
+  comp_comm_parallel_degree: 2 # default 2 is best
+  routing_policy: 'TopkRouterV2'
+  enable_sdrop: True
+  use_fused_ops_topkrouter: True
+  group_wise_a2a: True
+  # 0513-update
+  moe_intermediate_size: 29184
+  balance_via_topk_bias: True
+  topk_bias_update_rate: 0.001
+
+processor:
+  return_tensors: ms
+  tokenizer:
+    unk_token: '<unk>'
+    bos_token: '<s>'
+    eos_token: '</s>'
+    pad_token: '<unk>'
+    type: LlamaTokenizer
+  type: LlamaProcessor
+
+# metric
+metric:
+  type: PerplexityMetric
+
+# wrapper cell config
+runner_wrapper:
+  type: MFTrainOneStepCell
+  local_norm: False #True
+  scale_sense: 1
+  #scale_sense:
+    #type: DynamicLossScaleUpdateCell
+    #loss_scale_value: 65536
+    #scale_factor: 2
+    #scale_window: 1000
+  use_clip_grad: True
+
+eval_callbacks:
+  - type: ObsMonitor
+
+auto_tune: False
+filepath_prefix: './autotune'
+autotune_per_step: 10
+
+profile: True #True
+profile_pipeline: True
+profiler_level: 0 #1
+profile_start_step: 10
+profile_stop_step: 10
+profile_output: "/job/output/mf13_75b_1024p_profile"
+init_start_profile: False
+profile_communication: False #True
+profile_memory: False
+layer_scale: False
+layer_decay: 0.65
+lr_scale_factor: 256

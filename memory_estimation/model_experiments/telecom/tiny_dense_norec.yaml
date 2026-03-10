@@ -1,0 +1,234 @@
+seed: 0
+output_dir: /mnt/nvme_1_3_4/pl/simulator/results_telecom/bench_03b457c77ed5/output
+load_checkpoint: ''
+load_ckpt_format: safetensors
+src_strategy_path_or_dir: ''
+auto_trans_ckpt: false
+only_save_strategy: false
+resume_training: false
+use_parallel: true
+run_mode: train
+train_precision_sync: false
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: deepseekV3
+runner_config:
+  epochs: 1
+  batch_size: 1
+  sink_mode: true
+  sink_size: 1
+optimizer:
+  type: AdamW
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.1
+  learning_rate: 0.00024
+lr_schedule:
+  type: ConstantWarmUpLR
+  learning_rate: 2.0e-05
+  lr_end: 2.0e-05
+  warmup_lr_init: 0
+  warmup_steps: 200
+  total_steps: -1
+train_dataset: &id001
+  data_loader:
+    type: BlendedMegatronDatasetDataLoader
+    datasets_type: GPTDataset
+    shuffle: false
+    sizes:
+    - 1000000
+    - 0
+    - 0
+    config:
+      seed: 1234
+      split: 1, 0, 0
+      seq_length: 4096
+      eod_mask_loss: false
+      reset_position_ids: false
+      num_dataset_builder_threads: 1
+      create_attention_mask: false
+      reset_attention_mask: false
+      create_compressed_eod_mask: false
+      eod_pad_length: 128
+      eod: 1
+      pad: -1
+      data_path:
+      - '1'
+      - /home/pl/telecom/wiki/mmap_deepseekv3_datasets_text_document
+  input_columns:
+  - input_ids
+  - labels
+  - loss_mask
+  - position_ids
+  construct_args_key:
+  - input_ids
+  - labels
+  num_parallel_workers: 8
+  python_multiprocessing: false
+  repeat: 1
+  drop_remainder: true
+  numa_enable: false
+  prefetch_size: 1
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *id001
+context:
+  mode: 0
+  device_target: Ascend
+  max_call_depth: 10000
+  max_device_memory: 54GB
+  memory_optimize_level: O0
+  mempool_block_size: 54GB
+  save_graphs: true
+  save_graphs_path: ./output/graphs
+  jit_config:
+    jit_level: O1
+  ascend_config:
+    parallel_speed_up_json_path: /home/pl/simulator/parallel_speed_up.json
+parallel_config:
+  data_parallel: 2
+  model_parallel: 2
+  pipeline_stage: 2
+  expert_parallel: 4
+  micro_batch_num: 8
+  vocab_emb_dp: false
+  use_seq_parallel: true
+  gradient_aggregation_group: 4
+micro_batch_interleave_num: 1
+parallel:
+  parallel_mode: 1
+  gradients_mean: false
+  enable_alltoall: true
+  full_batch: false
+  dataset_strategy:
+  - - 2
+    - 1
+  - - 2
+    - 1
+  - - 2
+    - 1
+  - - 2
+    - 1
+  search_mode: sharding_propagation
+  enable_parallel_optimizer: true
+  pipeline_config:
+    pipeline_interleave: true
+    pipeline_scheduler: seqpipe
+  strategy_ckpt_config:
+    save_file: ./ckpt_strategy.ckpt
+    only_trainable_params: false
+  parallel_optimizer_config:
+    gradient_accumulation_shard: false
+    parallel_optimizer_threshold: 64
+recompute_config:
+  recompute: false
+  select_recompute: false
+  parallel_optimizer_comm_recompute: false
+  mp_comm_recompute: false
+  recompute_slice_activation: false
+use_legacy: false
+model:
+  model_config:
+    model_type: deepseek_v3
+    input_sliced_sig: true
+    architectures:
+    - DeepseekV3ForCausalLM
+    batch_size: 1
+    offset:
+      - 1
+      - 0
+    pp_interleave_num: 1
+    vocab_size: 131072
+    seq_length: 4096
+    hidden_size: 5120
+    intermediate_size: 18432
+    num_hidden_layers: 1
+    max_position_embeddings: 8192
+    hidden_act: fusedswiglu
+    num_attention_heads: 128
+    rms_norm_eps: 1.0e-06
+    add_bias_linear: false
+    use_flash_attention: true
+    use_attn_mask_compression: true
+    multi_latent_attention: true
+    mla_qkv_concat: false
+    kv_lora_rank: 512
+    q_lora_rank: 1536
+    qk_rope_head_dim: 64
+    v_head_dim: 128
+    qk_nope_head_dim: 128
+    qk_layernorm: true
+    attention_dropout: 0.0
+    hidden_dropout: 0.0
+    params_dtype: float32
+    compute_dtype: bfloat16
+    layernorm_compute_dtype: float32
+    softmax_compute_dtype: float32
+    rotary_dtype: float32
+    initializer_range: 0.01
+    num_nextn_predict_layers: 1
+    mtp_loss_factor: 0.3
+    position_embedding_type: yarn
+    scaling_factor: 40
+    beta_fast: 32
+    beta_slow: 1
+    mscale: 1
+    mscale_all_dim: 1
+    rope_theta: 10000.0
+    apply_rope_fusion: false
+    bias_swiglu_fusion: false
+    router_dense_type: float32
+    gated_linear_unit: true
+    moe_intermediate_size: 3072
+    routed_scaling_factor: 2.5
+    first_k_dense_replace: 1
+    n_routed_experts: 384
+    num_experts_per_tok: 8
+    n_shared_experts: 1
+    moe_shared_expert_intermediate_size: 3072
+    norm_topk_prob: true
+    scoring_func: sigmoid
+    moe_grouped_gemm: true
+    use_fused_ops_topkrouter: true
+    topk_group: 4
+    n_group: 8
+    moe_z_loss_coeff: 0.0
+    use_pad_tokens: false
+    npu_nums_per_device: 8
+    moe_router_load_balancing_type: seq_aux_loss
+    moe_aux_loss_coeff: 0.001
+    moe_token_drop_policy: false
+    moe_router_enable_expert_bias: true
+    moe_router_bias_update_rate: 0.0001
+callbacks:
+- type: MFLossMonitor
+  per_print_times: 1
+  max_step: 30
+- type: TrainCallBack
+  stop_step: 10
+runner_wrapper:
+  type: MFTrainOneStepCell
+  scale_sense: 1.0
+  use_clip_grad: true
+profile: true
+profile_start_step: 6
+profile_stop_step: 8
+init_start_profile: false
+profile_communication: false
+profile_memory: true
+layer_scale: false
+layer_decay: 0.65
+lr_scale_factor: 256
+profiler_level: 1
+remote_save_url: Please input obs url on AICC platform.
+swap_config:
+  swap: true
+  default_prefetch: 40
+  layer_swap:
+    layers:
+    - 0
+    - 4
+    - 8
+    backward_prefetch: 40

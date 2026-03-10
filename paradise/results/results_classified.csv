@@ -1,0 +1,6 @@
+yaml,                   csv,                                batch,  dev_num,dev_type,   correl
+ds/telecom/4k_13L.yaml, telecom_1T_32D_128B_wait.csv,       128,    32,     2,          90
+ds/telecom/32p_8mp.yaml,telecom_32D_256B_8MP_wait.csv,      256,    32,     2,          90
+cm/jiutian_48b_32p.yaml,jiutian_32D_48B_A2_Rec_wait.csv,    24,     32,     2,          50.024
+cm/jiutian_128p.yaml,   jiutian_240B_128D_A2_wait.csv,      192,    128,    2,          10
+pretrain_llama2_7b.yaml,llama2_7B_64head_64D_A3_wait.csv,   8,      64,     3,          10

@@ -1,0 +1,202 @@
+seed: 0
+output_dir: /home/ma-user/code/results/bench_b6656786e968/output
+load_checkpoint: ''
+resume_training: false
+auto_trans_ckpt: false
+load_ckpt_format: safetensors
+remove_redundancy: true
+only_save_strategy: false
+run_mode: train
+check_for_nan_in_loss_and_grad: true
+data_skip_steps: 50
+trainer:
+  type: CausalLanguageModelingTrainer
+  model_name: cm_628b
+do_eval: false
+eval_step_interval: -1
+eval_epoch_interval: 50
+runner_config:
+  epochs: 1
+  batch_size: 1
+  sink_mode: true
+  sink_size: 1
+runner_wrapper:
+  type: MFTrainOneStepCell
+  use_clip_grad: true
+  scale_sense: 1
+optimizer:
+  type: AdamW
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  learning_rate: 0.0001
+  weight_decay: 0.1
+lr_schedule:
+  type: CosineWithWarmUpLR
+  learning_rate: 0.0001
+  lr_end: 1.0e-05
+  warmup_steps: 2000
+  total_steps: -1
+train_dataset: &id001
+  data_loader:
+    type: MindDataset
+    dataset_dir: ''
+    shuffle: true
+  input_columns:
+  - input_ids
+  output_columns:
+  - input_ids
+  eod_reset: false
+  num_parallel_workers: 8
+  python_multiprocessing: false
+  drop_remainder: true
+  batch_size: 4
+  repeat: 1
+  numa_enable: false
+  prefetch_size: 1
+train_dataset_task:
+  type: CausalLanguageModelDataset
+  dataset_config: *id001
+use_parallel: true
+parallel:
+  parallel_mode: 1
+  gradients_mean: false
+  enable_alltoall: true
+  full_batch: false
+  dataset_strategy:
+  - - 32
+    - 1
+  search_mode: sharding_propagation
+  enable_parallel_optimizer: true
+  strategy_ckpt_save_file: ./ckpt_strategy.ckpt
+  parallel_optimizer_config:
+    gradient_accumulation_shard: false
+    parallel_optimizer_threshold: 64
+    optimizer_weight_shard_size: 8
+  dump_device_local_norm: true
+  pipeline_config:
+    pipeline_interleave: true
+    pipeline_scheduler: seqpipe
+parallel_config:
+  data_parallel: 32
+  model_parallel: 2
+  pipeline_stage: 2
+  expert_parallel: 32
+  use_seq_parallel: true
+  micro_batch_num: 4
+  vocab_emb_dp: true
+  gradient_aggregation_group: 8
+micro_batch_interleave_num: 1
+recompute_config:
+  recompute: true
+  select_recompute: false
+  parallel_optimizer_comm_recompute: false
+  mp_comm_recompute: false
+  recompute_slice_activation: false
+context:
+  jit_config:
+    jit_level: O1
+  memory_optimize_level: O0
+  mode: 0
+  device_target: Ascend
+  max_call_depth: 10000
+  max_device_memory: 52GB
+  mempool_block_size: 52GB
+  ascend_config:
+    parallel_speed_up_json_path: /home/ma-user/code/cm_mindformers//research/deepseek3/parallel_speed_up_dropless_235b(628b).json
+  save_graphs: false
+  save_graphs_path: ./graph
+  device_id: 0
+model:
+  model_config:
+    type: LlamaConfig
+    batch_size: 1
+    seq_length: 8192
+    hidden_size: 5120
+    num_layers: 8
+    num_heads: 40
+    n_kv_heads: 8
+    vocab_size: 152064
+    intermediate_size: 27648
+    qkv_has_bias: true
+    rms_norm_eps: 1.0e-05
+    theta: 1000000.0
+    max_position_embedding: 131072
+    compute_dtype: bfloat16
+    layernorm_compute_type: float32
+    residual_dtype: float32
+    softmax_compute_type: float32
+    rotary_dtype: float32
+    param_init_type: float32
+    router_dense_type: float32
+    use_flash_attention: true
+    use_past: false
+    pp_interleave_num: 2
+    offset:
+    - &id002
+      - 0
+      - 0
+    - *id002
+    checkpoint_name_or_path: ''
+    is_dynamic: false
+    qkv_concat: false
+    init_method_std: 0.02
+    return_extra_loss: true
+  arch:
+    type: LlamaForCausalLM
+moe_config:
+  expert_model_parallel: 1
+  moe_intermediate_size: 3456
+  expert_num: 64
+  num_experts_chosen: 8
+  capacity_factor: 1.5
+  routing_policy: TopkRouterV2
+  enable_sdrop: false
+  use_fused_ops_topkrouter: true
+  first_k_dense_replace: 3
+  aux_loss_factors:
+  - 0.01
+  aux_loss_types:
+  - expert
+  routed_scaling_factor: 8
+  norm_topk_prob: true
+  callback_moe_droprate: true
+  full_seq_aux_loss: true
+callbacks:
+- type: MFLossMonitor
+  per_print_times: 10
+  max_step: 30
+- type: CheckpointMonitor
+  prefix: cm_628b
+  save_checkpoint_steps: 200
+  keep_checkpoint_max: 100
+  save_network_params: false
+  integrated_save: false
+  async_save: false
+  checkpoint_format: safetensors
+  remove_redundancy: true
+- type: ObsMonitor
+- type: MoEDropRateCallback
+  expert_num: 64
+  capacity_factor: 1.5
+  mtp_depth: 0
+  num_layers: 8
+  micro_batch_num: 4
+processor:
+  return_tensors: ms
+  tokenizer:
+    model_max_length: 32768
+    vocab_file: path/vocab.json
+    merges_file: path/merges.txt
+    unk_token: <|endoftext|>
+    eos_token: <|endoftext|>
+    pad_token: <|endoftext|>
+    type: Qwen2Tokenizer
+  type: Qwen2Processor
+profile: true
+profile_start_step: 20
+profile_stop_step: 21
+init_start_profile: false
+profile_communication: false
+profile_memory: false
