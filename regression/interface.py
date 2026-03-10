@@ -288,6 +288,30 @@ class Handler:
     #  ND interface helpers                                                #
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    #  Base-sample selection                                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _closest_sample(all_samples, target_dims):
+        """
+        Return the sample whose parallel dims require the least scaling to
+        reach target_dims, measured as sum of |log(base/target)| over
+        mp, dp, pp.
+
+        Using the closest base minimises extrapolation error — scaling
+        physics are most accurate when the ratio between base and target
+        is small.
+        """
+        def distance(s):
+            d = s["dims"]
+            return (
+                abs(maths.log(max(d.get("mp", 1), 1) / max(target_dims.get("mp", 1), 1)))
+                + abs(maths.log(max(d.get("dp", 1), 1) / max(target_dims.get("dp", 1), 1)))
+                + abs(maths.log(max(d.get("pp", 1), 1) / max(target_dims.get("pp", 1), 1)))
+            )
+        return min(all_samples, key=distance)
+
     def get_strats_from_nd(self):
         with open(self.input_config, 'r') as f:
             raw = yaml.safe_load(f)
@@ -409,17 +433,15 @@ class Handler:
         else:
             self.calibrate_coefficients(actual_durations)
 
-        # Build predictor rooted at the first (base) trace
-        base_dims = all_samples[0]["dims"]
-        base_cd   = all_samples[0]["lane_totals"] if use_ewa else None
-        predictor = Predictor(
-            self.formula if not use_ewa else {},
-            base_dims,
-            coeffs=self.optimized_coeffs,
-        )
-
-        # Predict for each loaded trace config
-        nd_strats = [s["dims"] for s in all_samples]
+        # Build predictor: base is chosen per-target as the closest sample
+        # to minimise extrapolation error. A single fixed base (sample[0])
+        # would produce large errors whenever the target config is closer to
+        # a different training sample.
+        #nd_strats = [s["dims"] for s in all_samples]
+        nd_strats = self.get_strats_from_nd()
+        if nd_strats == []:
+            print(f"[interface] ND outputs 0 valid strategies, no regression can be performed")
+            return None
         keys      = [str(k) for k in nd_strats[0].keys()]
         results   = []
 
@@ -427,11 +449,17 @@ class Handler:
             vals      = [int(v) for v in strat.values()]
             pred_dims = {keys[j]: vals[j] for j in range(len(keys))}
 
+            base_sample = self._closest_sample(all_samples, pred_dims)
+            base_dims   = base_sample["dims"]
+
             if use_ewa:
+                base_cd   = base_sample["lane_totals"]
+                predictor = Predictor({}, base_dims, coeffs=self.optimized_coeffs)
                 total_time, lane_times = predictor.predict_from_lane_totals(base_cd, pred_dims)
                 raw_total = sum(lane_times.values()) or 1.0
                 r_out = {lane: (val / raw_total) * 100 for lane, val in lane_times.items()}
             else:
+                predictor = Predictor(self.formula, base_dims, coeffs=self.optimized_coeffs)
                 total_time, pred_breakdown = predictor.predict_with_breakdown(pred_dims)
                 bucket_times = pred_breakdown["bucket_times"]
                 raw_total    = sum(bucket_times.values()) or 1.0
@@ -481,6 +509,7 @@ class Handler:
             )
 
         print()
+        #self.ratios(all_classifications)
         return results[0][2]
 
     # ------------------------------------------------------------------ #
@@ -568,13 +597,15 @@ class Handler:
                 print(f"[validate] Calibration failed: {e}. Using defaults.")
 
             held_dims = all_samples[held_out]["dims"]
-            base_dims = train_dims_list[0]
 
             if use_ewa:
-                base_cd      = train_samples[0]["lane_totals"]
+                base_sample  = self._closest_sample(train_samples, held_dims)
+                base_dims    = base_sample["dims"]
+                base_cd      = base_sample["lane_totals"]
                 predictor    = Predictor({}, base_dims, coeffs=train_coeffs)
                 predicted_µs, lane_times = predictor.predict_from_lane_totals(base_cd, held_dims)
             else:
+                base_dims    = train_dims_list[0]
                 predictor    = Predictor(t_formula, base_dims, coeffs=train_coeffs)
                 predicted_µs, breakdown = predictor.predict_with_breakdown(held_dims)
                 lane_times   = breakdown["bucket_times"]

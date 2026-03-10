@@ -2,9 +2,9 @@ from interface import Handler
 import os
 
 input_dims = {
-        'dims': ['MP', 'DP', 'MB', 'MBS'],
-        'device_count': None,
-        'gbs': None
+        'dims': ['DP','MP','EP','PP','MB','MBS'],
+        'device_count': 32,
+        'gbs': 128
         }
 
 trace_path = [
@@ -25,10 +25,10 @@ config_path = [
          #"/home/pl/telecom/results_telecom_swap/bench_ab038b0026aa/config_ab038b0026aa.yaml",
          #"/home/pl/telecom/results_telecom_swap/bench_fd4e15cbdb5d/config_fd4e15cbdb5d.yaml",
          #"/home/pl/telecom/results_telecom_swap/bench_e671bf09d8d0/config_e671bf09d8d0.yaml",
-         "config_small.yaml",
-         "config_small2.yaml",
-         "config.yaml",
-         "config.yaml"
+         "./configs/config_small.yaml",
+         "./configs/config_small2.yaml",
+         "./configs/config.yaml",
+         "./configs/config.yaml"
          ]
 
 graphs = [
@@ -43,7 +43,7 @@ graphs = [
          r"C:\Users\j50056410\Desktop\jagan\regression\graphs\graphs"
         ]
 
-input_config = '/home/pl/telecom/results_telecom_swap/bench_5c16339b00a3/config_5c16339b00a3.yaml'
+input_config = "./configs/config_small.yaml"#'/home/pl/telecom/results_telecom_swap/bench_5c16339b00a3/config_5c16339b00a3.yaml'
 
 handler = Handler(trace_path, config_path, graphs, input_config, input_dims)
 

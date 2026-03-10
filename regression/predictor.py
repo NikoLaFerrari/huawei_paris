@@ -220,12 +220,20 @@ class Predictor:
         lane_times = {}
 
         for lane, base_us in base_cd.items():
-            if lane in ("UNKNOWN_COMM","OPTIMIZER"):
+            # Pass-through lanes: no physics scaling applies
+            if lane in ("UNKNOWN_COMM", "OPTIMIZER_SWAP", "IDLE"):
                 lane_times[lane] = base_us
                 continue
 
+            # COMPUTE lane contains a mix of forward, backward, and recompute
+            # work. We can't split them from a single lane_totals entry, so we
+            # apply the forward/backward scale (mp_b/mp_t) as the dominant term.
+            # Recompute scaling (which also depends on pp ratio) is a second-order
+            # correction that requires sub-lane data — accepted approximation here.
+            pass_type = "forward"
+
             alpha_scale, n_scale, _ = self._compute_scales(
-                lane, pred_dims, None, "forward", "bytes"
+                lane, pred_dims, None, pass_type, "bytes"
             )
             lane_times[lane] = base_us * alpha_scale * n_scale
 
@@ -396,20 +404,21 @@ class Predictor:
         elif lane == "PP_COMM":
             alpha_scale = 1.0
             beta_scale  = 1.0
-            n_scale     = mp_b / mp_t
+            n_scale     = (dp_b / dp_t) * (mp_b / mp_t)
 
         elif lane == "COMPUTE":
             alpha_scale = 1.0
             beta_scale  = 1.0
             if pass_type == "recompute":
-                n_scale = (pp_t / pp_b) * (mp_b / mp_t)#(pp_t / pp_b) * (dp_b * mp_b) / (dp_t * mp_t)
+                n_scale = (pp_t / pp_b) * (mp_b / mp_t) * (dp_b / dp_t)#(pp_t / pp_b) * (dp_b * mp_b) / (dp_t * mp_t)
             else:
-                n_scale = mp_b / mp_t #(dp_b * mp_b) / (dp_t * mp_t)
+                n_scale = (dp_b / dp_t) * (mp_b / mp_t) #(dp_b * mp_b) / (dp_t * mp_t)
 
         elif lane == "BUBBLE":
             pp_scale    = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else 1.0
             mp_scale    = mp_b / mp_t
-            alpha_scale = pp_scale * mp_scale
+            dp_scale    = dp_b / dp_t
+            alpha_scale = pp_scale * mp_scale * dp_scale
             beta_scale  = 1.0
             n_scale     = 1.0
 
