@@ -2,9 +2,9 @@ from interface import Handler
 import os
 
 input_dims = {
-        'dims': ['DP','MP','EP','PP','MB','MBS'],
-        'device_count': 32,
-        'gbs': 128
+        'dims': ['DP','MP','PP','MB','MBS'],
+        'device_count': 8,
+        'gbs': 64
         }
 
 trace_path = [
@@ -43,7 +43,7 @@ graphs = [
          r"C:\Users\j50056410\Desktop\jagan\regression\graphs\graphs"
         ]
 
-input_config = "./configs/config_small.yaml"#'/home/pl/telecom/results_telecom_swap/bench_5c16339b00a3/config_5c16339b00a3.yaml'
+input_config = "./configs/config_small2.yaml"#'/home/pl/telecom/results_telecom_swap/bench_5c16339b00a3/config_5c16339b00a3.yaml'
 
 handler = Handler(trace_path, config_path, graphs, input_config, input_dims)
 

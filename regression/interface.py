@@ -322,14 +322,15 @@ class Handler:
             'dp': pc.get('data_parallel',     1),
             'ep': pc.get('expert_parallel',   1),
         }
-        device_count = parallel['pp'] * parallel['mp'] * parallel['dp'] * parallel['ep']
+        device_count = self.input_dims.get("deivce_count")# parallel['pp'] * parallel['mp'] * parallel['dp'])
         machine   = Har.Machine(device_count, 2)
         recompute = raw.get('recompute_config').get('recompute')
         engine    = Par.Parallelize(
             self.input_config, machine, self.input_dims['gbs'],
             Dim.get_dims(self.input_dims['dims']), mppb=recompute,
         )
-        return [strat[0] for strat in engine.run_generation_to_ordering(None, None)]
+        strategies = engine.run_generation_to_ordering(None, None)
+        return [s[0] for s in strategies]
 
     def run_nd(self, config, raw_config):
         pc = raw_config.get('parallel_config')
@@ -478,7 +479,7 @@ class Handler:
 
         # ── Summary table ─────────────────────────────────────────────
         lane_order = ["COMPUTE", "BUBBLE", "PP_COMM", "MP_COMM",
-                      "DP_COMM", "EP_COMM", "OPTIMIZER_SWAP", "IDLE", "UNKNOWN_COMM"]
+                      "DP_COMM", "EP_COMM", "UNKNOWN_COMM"]
         col_w = 6
 
         strat_header = "  ".join(f"{k:>{col_w}}" for k in keys)
