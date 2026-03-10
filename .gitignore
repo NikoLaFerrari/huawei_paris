@@ -1,2 +1,16 @@
 regression/traces/
 regression/graphs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+dist/
+build/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
