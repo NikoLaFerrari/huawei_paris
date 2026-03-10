@@ -100,17 +100,33 @@ EWA correctly handles the parallel compute/comm streams — rather than
 summing raw event durations (which double-counts overlapping streams),
 it attributes time to whichever lane the compute stream was blocked on.
 
-Multi-PID deduplication in _get_classification
-───────────────────────────────────────────────
-MindSpore trace files may contain RunGraph events from multiple
-processes under different PIDs (e.g. rank 0 and rank 1 both present).
-find_step_events() returns all of them, making n_steps = 2× reality
-and halving every per-step value from summarize_wait_causes().
-Fix: restrict step_events to the PID that owns the compute stream.
+Multi-rank deduplication in _get_classification
+────────────────────────────────────────────────
+MindSpore trace files may contain RunGraph events from multiple ranks
+under different PIDs covering the same time windows. find_step_events()
+returns all of them, making n_steps = 2× reality and halving every
+per-step value from summarize_wait_causes().
+
+Fix: deduplicate step events by timestamp overlap before passing to EWA.
+Two RunGraph events that overlap by >50% of their duration represent the
+same physical step seen from different ranks — only the first is kept.
+
+Cache schema (pkl files)
+────────────────────────
+Each pkl file written by run_extractor() has the structure:
+    {
+        "samples":        {data, dims, mean_step_us, lane_totals},
+        "classification": (cd, pctg),
+    }
+
+load_from_pkls() reads this format directly, normalising dim key names
+(TP→mp, DP→dp, PP→pp, EP→ep, VPP→vpp, MBS→mb) to the convention
+expected by _compute_scales in Predictor.
 """
 
 import re
 import json
+import pickle
 import yaml
 
 from bench_tools import prof, ms_trace
@@ -133,6 +149,20 @@ _TRACE_SIZE_OPS = {"AlltoAllV", "AlltoAllVC", "Send", "Receive", "Broadcast"}
 
 # MatMul-family op types for which we can derive FLOPs from input shapes
 _MATMUL_OPS = {"MatMul", "MatMulExt", "BatchMatMul", "Dense"}
+
+# Normalise training-config dim key names to the mp/dp/pp/ep convention
+# used throughout Predictor._compute_scales.
+_DIM_KEY_MAP = {
+    "TP":  "mp",
+    "CP":  "cp",
+    "DP":  "dp",
+    "PP":  "pp",
+    "EP":  "ep",
+    "VPP": "vpp",
+    "MBS": "mb",
+    "MB":  "mb",
+    "MP":  "mp",
+}
 
 
 class Extractor:
@@ -182,7 +212,7 @@ class Extractor:
             One entry per trace:
             {
                 "data":         {lane::primitive: [data_point, ...]},
-                "dims":         {dp, mp, pp, ep, ...},
+                "dims":         {mp, dp, pp, ep, ...},  (normalised keys)
                 "mean_step_us": float | None,
                 "lane_totals":  {lane: µs},   EWA-attributed per-step µs
             }
@@ -197,7 +227,6 @@ class Extractor:
             print(f"[extractor] ── Trace {i + 1} / {len(self.trace_paths)} ──")
             process_info = prof.parse_process_info(self.trace_paths[i])
 
-            # ── Step isolation: identify steady-state windows ─────────
             windows      = self._get_steady_state_windows(process_info)
             mean_step_us = self._get_mean_step_time(process_info)
 
@@ -209,7 +238,7 @@ class Extractor:
 
             with open(self.config_paths[i], "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
-            parallel_dims = get_parallel_dimensions(cfg)
+            parallel_dims = self._normalise_dims(get_parallel_dimensions(cfg))
 
             structured_data = {}
 
@@ -256,7 +285,6 @@ class Extractor:
                 f"compute {n_comp_kept}/{n_comp_total}."
             )
 
-            # ── Classification via EventWaitAnalyzer ──────────────────
             classification = self._get_classification(
                 process_info, graph_scope_map, parallel_dims, windows=windows
             )
@@ -269,6 +297,58 @@ class Extractor:
                 "mean_step_us": mean_step_us,
                 "lane_totals":  cd,
             })
+
+        return all_samples, all_classifications
+
+    def load_from_pkls(self, pkl_paths):
+        """
+        Load pre-extracted samples directly from cache pkl files,
+        bypassing trace and IR graph parsing entirely.
+
+        Handles the cache schema:
+            {"samples": {data, dims, mean_step_us, lane_totals},
+             "classification": (cd, pctg)}
+
+        Dim keys are normalised (TP→mp, DP→dp, etc.) so that
+        Predictor._compute_scales receives the expected key names.
+
+        Parameters
+        ----------
+        pkl_paths : list[str]
+
+        Returns
+        -------
+        all_samples         : list[dict]
+        all_classifications : list[tuple]
+        """
+        all_samples         = []
+        all_classifications = []
+
+        for path in pkl_paths:
+            print(f"[extractor] Loading pkl: {path}")
+            with open(path, "rb") as f:
+                d = pickle.load(f)
+
+            sample = d.get("samples", d)   # handle both wrapped and flat formats
+            if not isinstance(sample, dict):
+                print(f"[extractor] WARNING: unexpected pkl format in {path}, skipping.")
+                continue
+
+            # Normalise dim keys
+            sample["dims"] = self._normalise_dims(sample.get("dims", {}))
+
+            lt    = sample.get("lane_totals", {})
+            total = sum(lt.values()) or 1.0
+            pctg  = {k: v / total * 100 for k, v in lt.items()}
+
+            print(
+                f"[extractor]   dims={sample['dims']}  "
+                f"mean_step={sample.get('mean_step_us', 0)/1e6:.4f}s  "
+                f"sum(lane_totals)={sum(lt.values())/1e6:.4f}s"
+            )
+
+            all_samples.append(sample)
+            all_classifications.append((lt, pctg))
 
         return all_samples, all_classifications
 
@@ -455,6 +535,7 @@ class Extractor:
 
         x_bytes = float(self._get_total_output_size(op) or 1)
         x_flops = self._get_flops(op_type, op)
+        print(f"[extractor] {primitive} flops: {x_flops}")
         x       = float(x_flops) if x_flops is not None else x_bytes
 
         return {
@@ -483,20 +564,19 @@ class Extractor:
 
         raw_cd_dict values are per-step µs from summarize_wait_causes(),
         which attributes time causally from the compute stream perspective.
-        This correctly handles the parallel compute/comm streams: rather than
-        summing event durations (which double-counts overlapping streams),
-        EWA asks "what was the compute stream blocked on?" at each moment.
+        EWA correctly handles parallel compute/comm streams — rather than
+        summing raw event durations (which double-counts overlapping streams)
+        it asks "what was the compute stream blocked on?" at each moment.
 
-        Multi-PID deduplication
-        ───────────────────────
-        MindSpore trace files may contain RunGraph events from multiple
-        processes under different PIDs (e.g. two ranks in the same file).
-        find_step_events() returns all of them, making n_steps = 2× reality
-        and halving every per-step value from summarize_wait_causes().
+        Multi-rank deduplication
+        ────────────────────────
+        MindSpore trace files may contain RunGraph events from multiple ranks
+        covering the same time windows. find_step_events() returns all of
+        them, making n_steps = 2× reality and halving every per-step value.
 
-        Fix: restrict step_events to the PID that owns the compute stream
-        (find_compute_pid). That rank's RunGraph events are the correct step
-        markers for the compute stream EWA is analysing.
+        Fix: deduplicate by timestamp overlap before passing to EWA. Two
+        RunGraph events that overlap by >50% of their duration represent the
+        same physical step — only the first is kept.
 
         EWA key → lane mapping
         ──────────────────────
@@ -546,50 +626,34 @@ class Extractor:
         )
         wait_causes = analyzer.find_wait_causes(wait_events, delaying_events)
 
-        # ── Step events: restrict to compute PID only ─────────────────
-        # find_step_events() may return RunGraph events from multiple
-        # processes. Filter to the PID owning the compute stream so that
-        # n_steps is correct and per-step values are not halved.
-        compute_pid     = ms_trace.find_compute_pid(process_info)
+        # ── Step events: deduplicate overlapping multi-rank events ─────
+        # Traces may contain RunGraph events from 2+ ranks covering the
+        # same time windows. EWA divides by n_steps — duplicate step events
+        # halve every per-step value. Deduplicate: if two events overlap by
+        # >50% of their duration they represent the same step — keep only
+        # the first (sorted by timestamp).
         all_step_events = sorted(
             ms_trace.find_step_events(process_info, "RunGraph"),
             key=lambda d: d["ts"]
         )
-
         deduped = []
         for e in all_step_events:
             if not deduped:
                 deduped.append(e)
                 continue
-            prev = deduped[-1]
+            prev     = deduped[-1]
             prev_end = prev["ts"] + prev["dur"]
-            overlap = max(0.0, min(prev_end, e["ts"] + e["dur"]) - max(prev["ts"], e["ts"]))
+            overlap  = max(0.0, min(prev_end, e["ts"] + e["dur"]) - max(prev["ts"], e["ts"]))
             if overlap / max(e["dur"], 1.0) > 0.5:
-                continue
+                continue   # same step seen from another rank — skip
             deduped.append(e)
+
         if len(deduped) != len(all_step_events):
             print(
-                f"[extractor] Deduped {len(all_step_events)} -> {len(deduped)} "
+                f"[extractor] Deduped {len(all_step_events)} → {len(deduped)} "
                 f"RunGraph events (overlapping multi-rank step markers removed)."
             )
         step_events = deduped
-        #step_events = [e for e in all_step_events if e.get("pid") == compute_pid]
-
-        if len(step_events) == 0:
-            # PID filtering removed everything — PID key mismatch or
-            # single-rank trace where step events live under a different pid.
-            print(
-                f"[extractor] WARNING: no RunGraph events matched "
-                f"compute_pid={compute_pid}; "
-                f"falling back to all {len(all_step_events)} RunGraph events."
-            )
-            step_events = all_step_events
-        elif len(step_events) != len(all_step_events):
-            print(
-                f"[extractor] Multi-PID trace: filtered "
-                f"{len(all_step_events)} → {len(step_events)} RunGraph events "
-                f"for compute_pid={compute_pid}."
-            )
 
         # ── Restrict to steady-state windows ─────────────────────────
         if windows is not None:
@@ -661,7 +725,7 @@ class Extractor:
             lane = ewa_to_lane.get(key, "UNKNOWN_COMM")
             cd[lane] += val
 
-        # ── Sanity: warn on unmapped keys ─────────────────────────────
+        # ── Sanity: warn on unexpected ratio or unmapped keys ─────────
         cd_sum = sum(cd.values())
         if ewa_step_time > 0:
             ratio = cd_sum / ewa_step_time
@@ -688,8 +752,7 @@ class Extractor:
     def _get_input_size(op):
         """
         Return first input tensor size in bytes, or None if unavailable.
-        Used for AllGather / ReduceScatter / AllReduce where input is the
-        correct message size for the Hockney model.
+        Used for AllGather / ReduceScatter / AllReduce.
         """
         if op is None or not op.input_tensors:
             return None
@@ -836,6 +899,21 @@ class Extractor:
     # ------------------------------------------------------------------ #
     #  Utility                                                             #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalise_dims(dims):
+        """
+        Normalise parallel dimension key names to the lowercase mp/dp/pp/ep
+        convention expected by Predictor._compute_scales.
+
+        Handles both uppercase config keys (TP, DP, PP, EP, VPP, MBS) and
+        already-lowercase keys transparently.
+        """
+        result = {}
+        for k, v in dims.items():
+            normalised = _DIM_KEY_MAP.get(k.upper(), k.lower())
+            result[normalised] = v
+        return result
 
     @staticmethod
     def _get_mean_step_time(process_info, warmup_steps=2):

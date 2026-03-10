@@ -316,7 +316,7 @@ class Predictor:
         )
 
         if lane == "MP_COMM":
-            if pred_dims.get("mp", pred_dims.get("MP", self.base_dims.get("mp", 1))) <= 1:
+            if pred_dims.get("mp", pred_dims.get("MP", pred_dims.get("TP",self.base_dims.get("mp", 1)))) <= 1:
                 return 0.0
         elif lane == "DP_COMM":
             if pred_dims.get("dp", pred_dims.get("DP", self.base_dims.get("dp", 1))) <= 1:

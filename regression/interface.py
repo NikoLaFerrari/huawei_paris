@@ -114,72 +114,51 @@ class Handler:
         return os.path.join(self.extraction_cache_dir, f"extract_{key}.pkl")
 
     def _load_or_extract(self):
-        """
-        Return (all_samples, all_classifications).
-
-        Loads each trace from its .pkl cache when the cache is newer than the
-        trace file AND the cache entry contains lane_totals (written after the
-        EWA integration). Otherwise re-extracts.
-        """
         import pickle
+        import glob
 
+        # ── Try loading directly from all pkls in extraction_cache_dir ────
+        # Hash-based lookup fails when trace paths differ between machines.
+        # Fall back to loading all pkls found in the directory, in order.
+        pkl_files = sorted(glob.glob(os.path.join(self.extraction_cache_dir, "extract_*.pkl")))
+
+        if pkl_files:
+            extractor = Extractor(
+                self.paths['trace_paths'],
+                self.paths['graph_paths'],
+                self.paths['config_paths'],
+            )
+            all_samples, all_classifications = extractor.load_from_pkls(pkl_files)
+            if len(all_samples) == len(self.paths['trace_paths']):
+                return all_samples, all_classifications
+            print(
+                f"[extractor] WARNING: found {len(all_samples)} pkls but expected "
+                f"{len(self.paths['trace_paths'])}. Falling through to re-extraction."
+            )
+
+        # ── Full extraction fallback ───────────────────────────────────────
         trace_paths  = self.paths['trace_paths']
         graph_paths  = self.paths['graph_paths']
         config_paths = self.paths['config_paths']
 
-        cached          = [None] * len(trace_paths)
-        missing_indices = []
-
-        for i, tp in enumerate(trace_paths):
-            cp = self._cache_path(tp)
-            if os.path.exists(cp):
-                try:
-                    trace_mtime = os.path.getmtime(tp)
-                    cache_mtime = os.path.getmtime(cp)
-                    if cache_mtime >= trace_mtime:
-                        with open(cp, "rb") as f:
-                            entry = pickle.load(f)
-                        # Reject pre-EWA cache entries that lack lane_totals
-                        if entry.get("samples", {}).get("lane_totals") is None:
-                            print(
-                                f"[extractor] Trace {i+1}: cache missing lane_totals "
-                                f"(pre-EWA entry), re-extracting."
-                            )
-                        else:
-                            cached[i] = entry
-                            print(f"[extractor] Trace {i+1}: loaded from cache ({cp})")
-                except Exception as e:
-                    print(f"[extractor] Trace {i+1}: cache load failed ({e}), re-extracting.")
-            if cached[i] is None:
-                missing_indices.append(i)
-
-        if not missing_indices:
-            all_samples         = [c["samples"]        for c in cached]
-            all_classifications = [c["classification"] for c in cached]
-            return all_samples, all_classifications
-
-        # Extract only the missing traces
-        extractor = Extractor(
-            [trace_paths[i]  for i in missing_indices],
-            [graph_paths[i]  for i in missing_indices],
-            [config_paths[i] for i in missing_indices],
-        )
+        extractor = Extractor(trace_paths, graph_paths, config_paths)
         new_samples, new_classifications = extractor.run_extractor()
 
-        for j, i in enumerate(missing_indices):
+        os.makedirs(self.extraction_cache_dir, exist_ok=True)
+        for i in range(len(new_samples)):
             cp    = self._cache_path(trace_paths[i])
-            entry = {"samples": new_samples[j], "classification": new_classifications[j]}
+            entry = {
+                "samples":        new_samples[i],
+                "classification": new_classifications[i],
+            }
             try:
                 with open(cp, "wb") as f:
                     pickle.dump(entry, f)
                 print(f"[extractor] Trace {i+1}: saved to cache ({cp})")
             except Exception as e:
                 print(f"[extractor] Trace {i+1}: cache save failed ({e})")
-            cached[i] = entry
 
-        all_samples         = [c["samples"]        for c in cached]
-        all_classifications = [c["classification"] for c in cached]
-        return all_samples, all_classifications
+        return new_samples, new_classifications    
 
     # ------------------------------------------------------------------ #
     #  Calibration                                                         #
@@ -219,21 +198,50 @@ class Handler:
 
     def _calibrate_from_ewa(self, all_samples, actual_durations):
         """
+        Calibrate overlap coefficients using EWA lane totals as bucket_data.
+
+        For self-prediction all _compute_scales factors are 1.0, so
+        lane_totals feed directly into objective_fn without any extrapolation.
         """
-        print("[interface] EWA path: verifying self-prediction accuracy...")
-        excluded = {"UNKNOWN_COMM", "IDLE"}
+        print("[interface] Calibrating overlap coefficients from EWA lane totals...")
+
+        bucket_data = [s["lane_totals"] for s in all_samples]
+        vpps        = [s["dims"].get("vpp", 1) for s in all_samples]
+
+        res = minimize(
+            objective_fn,
+            [0.95, 0.10, 0.40],
+            args=(actual_durations, bucket_data, vpps),
+            bounds=[(0, 1)] * 3,
+            method="L-BFGS-B",
+        )
+        if res.success:
+            self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2]}
+            print(f"[interface] Optimized overlap coeffs: {self.optimized_coeffs}")
+        else:
+            print(f"[interface] Calibration did not converge. Keeping defaults: {self.optimized_coeffs}")
+
+        # Log self-prediction accuracy at calibrated coeffs
         for i, sample in enumerate(all_samples):
-            lt      = sample["lane_totals"]
-            pred    = sum(v for k, v in lt.items() if k not in excluded)
+            lt   = sample["lane_totals"]
+            mp_c = self.optimized_coeffs["mp"]
+            dp_c = self.optimized_coeffs["dp"]
+            ep_c = self.optimized_coeffs["ep"]
+            pred = (
+                lt.get("COMPUTE", 0) + lt.get("BUBBLE", 0)
+                + lt.get("PP_COMM", 0)
+                + lt.get("MP_COMM", 0) * mp_c
+                + max(lt.get("DP_COMM", 0) * dp_c, lt.get("EP_COMM", 0) * ep_c)
+                + lt.get("OPTIMIZER_SWAP", 0)
+                + lt.get("IDLE", 0)
+            )
             actual  = actual_durations[i]
             err_pct = (pred - actual) / actual * 100 if actual > 0 else 0.0
             print(
                 f"[interface]   Trace {i+1}: "
-                f"sum(lane_totals)={pred/1e6:.4f}s  "
-                f"actual={actual/1e6:.4f}s  "
-                f"discrepancy={err_pct:+.1f}%"
+                f"pred={pred/1e6:.4f}s  actual={actual/1e6:.4f}s  "
+                f"err={err_pct:+.1f}%"
             )
-        print("[interface] EWA path: no overlap calibration needed.")
 
     # ------------------------------------------------------------------ #
     #  ND interface helpers                                                #
@@ -361,7 +369,8 @@ class Handler:
             self.calibrate_coefficients(actual_durations)
 
         # Build predictor rooted at the first (base) trace
-        base_dims = self.meta['trace_dims_list'][0]
+        # base_dims = self.meta['trace_dims_list'][0]
+        base_dims = all_samples[0]["dims"]
         base_cd   = all_samples[0]["lane_totals"] if use_ewa else None
         predictor = Predictor(
             self.formula if not use_ewa else {},
@@ -371,7 +380,8 @@ class Handler:
 
         # Predict for each strategy
         #nd_strats = self.get_strats_from_nd()
-        nd_strats = self.meta['trace_dims_list']
+        #nd_strats = self.meta['trace_dims_list']
+        nd_strats = [s["dims"] for s in all_samples] 
         keys      = [str(k) for k in nd_strats[0].keys()]
         results   = []
 
@@ -397,7 +407,8 @@ class Handler:
         measured_map = {}
         for i, sample in enumerate(all_samples):
             if sample.get("mean_step_us") is not None:
-                norm = {k.lower(): v for k, v in self.meta['trace_dims_list'][i].items()}
+                #norm = {k.lower(): v for k, v in self.meta['trace_dims_list'][i].items()}
+                norm = {k.lower(): v for k, v in all_samples[i]["dims"].items()}
                 measured_map[tuple(sorted(norm.items()))] = sample['mean_step_us']
 
         # ── Summary table ─────────────────────────────────────────────
@@ -597,7 +608,8 @@ def objective_fn(x, actual_times, bucket_data, vpps):
         )
         optimizer_swap = bt.get("OPTIMIZER_SWAP", 0.0)
 
-        t_pred = compute_bubble + blocking + async_comm + optimizer_swap
+        idle = bt.get("IDLE", 0.0)
+        t_pred = compute_bubble + blocking + async_comm + optimizer_swap + idle
 
         e += (maths.log10(max(t_pred, eps)) - maths.log10(max(actual_time, eps))) ** 2
 
