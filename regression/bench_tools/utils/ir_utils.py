@@ -153,7 +153,7 @@ def get_parallel_dimensions(
     extract TP-CP-DP-PP sizes from a benchmark YAML config dict
     """
     return {
-        "TP": config["parallel_config"].get("model_parallel", 1),
+        "MP": config["parallel_config"].get("model_parallel", 1),
         "CP": config["parallel_config"].get("context_parallel", 1),
         "DP": config["parallel_config"].get("data_parallel", 1),
         "PP": config["parallel_config"].get("pipeline_stage", 1),

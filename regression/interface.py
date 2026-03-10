@@ -50,7 +50,7 @@ class Handler:
         }
         self.formula = {}
         curr_dir = os.path.dirname(os.path.abspath(__file__))
-        self.cache_dir           = os.path.join(curr_dir, "cache")
+        self.cache_dir            = os.path.join(curr_dir, "cache")
         self.extraction_cache_dir = os.path.join(curr_dir, "extraction_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self.optimized_coeffs = {"mp": 0.95, "dp": 0.10, "ep": 0.40}
@@ -69,6 +69,13 @@ class Handler:
     # ------------------------------------------------------------------ #
 
     def extract_trace_dims(self, raw_cfg):
+        """
+        Parse parallel dims from a training config YAML.
+
+        All keys are normalised to lowercase mp/dp/pp/ep/mb/vpp so that
+        _compute_scales in Predictor always receives consistent key names
+        regardless of whether the source is a config file or a pkl.
+        """
         pc         = raw_cfg.get("parallel_config", {})
         model_cfg  = raw_cfg.get("model", {}).get("model_config", {})
         runner_cfg = raw_cfg.get('runner_config')
@@ -78,10 +85,11 @@ class Handler:
         mb         = max(1, gbs // (dp * mb_num))
         model_name        = raw_cfg.get("trainer").get("model_name")
         recompute_enabled = raw_cfg.get("recompute_config").get("recompute")
+        # Use "mp" throughout — never "tp" or "TP"
         return (
             {
                 "dp":  dp,
-                "mp":  pc.get("model_parallel", 1),
+                "mp":  pc.get("model_parallel", pc.get("tensor_parallel", 1)),
                 "pp":  pc.get("pipeline_stage", 1),
                 "ep":  pc.get("expert_parallel", 1),
                 "mb":  mb,
@@ -114,13 +122,27 @@ class Handler:
         return os.path.join(self.extraction_cache_dir, f"extract_{key}.pkl")
 
     def _load_or_extract(self):
+        """
+        Return (all_samples, all_classifications).
+
+        Strategy
+        ────────
+        1. If extraction_cache_dir contains extract_*.pkl files, load them
+           all via load_from_pkls (hash-based lookup is skipped because trace
+           paths differ between machines).
+        2. After loading from pkls, enrich each sample's dims with fields
+           from the corresponding config file (ep, mb, vpp) that the extractor
+           did not store at extraction time.
+        3. If pkl count doesn't match trace count, fall through to full
+           re-extraction.
+        4. Full re-extraction saves new pkls by hash for future use.
+        """
         import pickle
         import glob
 
-        # ── Try loading directly from all pkls in extraction_cache_dir ────
-        # Hash-based lookup fails when trace paths differ between machines.
-        # Fall back to loading all pkls found in the directory, in order.
-        pkl_files = sorted(glob.glob(os.path.join(self.extraction_cache_dir, "extract_*.pkl")))
+        pkl_files = sorted(
+            glob.glob(os.path.join(self.extraction_cache_dir, "extract_*.pkl"))
+        )
 
         if pkl_files:
             extractor = Extractor(
@@ -129,14 +151,33 @@ class Handler:
                 self.paths['config_paths'],
             )
             all_samples, all_classifications = extractor.load_from_pkls(pkl_files)
+
             if len(all_samples) == len(self.paths['trace_paths']):
+                # Enrich pkl dims with config dims for fields the extractor
+                # didn't store (ep, mb, vpp come from the config parser).
+                # Config ordering may differ from pkl ordering — match by
+                # the dims that ARE present (mp, dp, pp).
+                for i, sample in enumerate(all_samples):
+                    pkl_dims    = sample["dims"]
+                    config_dims = self.meta['trace_dims_list'][i]
+                    for k, v in config_dims.items():
+                        if k not in pkl_dims:
+                            pkl_dims[k] = v
+                    # Ensure no TP key leaks through — rename to mp
+                    if "tp" in pkl_dims and "mp" not in pkl_dims:
+                        pkl_dims["mp"] = pkl_dims.pop("tp")
+                    pkl_dims.pop("tp", None)   # remove stale tp if mp already set
+                    print(
+                        f"[extractor]   Trace {i+1} enriched dims: {pkl_dims}"
+                    )
                 return all_samples, all_classifications
+
             print(
                 f"[extractor] WARNING: found {len(all_samples)} pkls but expected "
                 f"{len(self.paths['trace_paths'])}. Falling through to re-extraction."
             )
 
-        # ── Full extraction fallback ───────────────────────────────────────
+        # ── Full extraction fallback ───────────────────────────────────
         trace_paths  = self.paths['trace_paths']
         graph_paths  = self.paths['graph_paths']
         config_paths = self.paths['config_paths']
@@ -158,7 +199,7 @@ class Handler:
             except Exception as e:
                 print(f"[extractor] Trace {i+1}: cache save failed ({e})")
 
-        return new_samples, new_classifications    
+        return new_samples, new_classifications
 
     # ------------------------------------------------------------------ #
     #  Calibration                                                         #
@@ -168,9 +209,6 @@ class Handler:
         """
         Calibrate overlap coefficients using raw Hockney bucket times.
         Fallback path used when EWA lane_totals are unavailable.
-
-        Each trace gets its own Predictor (base_dims == pred_dims) so all
-        scale factors reduce to 1.0 — no extrapolation artefacts.
         """
         print("[interface] Calibrating overlap coefficients (Hockney path)...")
 
@@ -180,7 +218,7 @@ class Handler:
             per_trace_pred = Predictor(self.formula, dims)
             _, breakdown   = per_trace_pred.predict_with_breakdown(dims)
             all_bucket_data.append(breakdown["bucket_times"])
-            vpps.append(dims.get("vpp", dims.get("VPP", 1)))
+            vpps.append(dims.get("vpp", 1))
 
         res = minimize(
             objective_fn,
@@ -219,7 +257,10 @@ class Handler:
             self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2]}
             print(f"[interface] Optimized overlap coeffs: {self.optimized_coeffs}")
         else:
-            print(f"[interface] Calibration did not converge. Keeping defaults: {self.optimized_coeffs}")
+            print(
+                f"[interface] Calibration did not converge. "
+                f"Keeping defaults: {self.optimized_coeffs}"
+            )
 
         # Log self-prediction accuracy at calibrated coeffs
         for i, sample in enumerate(all_samples):
@@ -275,13 +316,13 @@ class Handler:
             'ep': pc.get('expert_parallel',   1),
         }
         device_count = parallel['pp'] * parallel['mp'] * parallel['dp'] * parallel['ep']
-        machine  = Har.Machine(device_count, 2)
+        machine   = Har.Machine(device_count, 2)
         recompute = raw_config.get('recompute_config').get('recompute')
-        engine   = Par.Parallelize(config, machine, None, [], mppb=recompute)
-        space    = engine.run_generation_to_ordering(None, None)[0]
-        dur      = space[3]
-        total    = sum(dur)
-        mapping  = {
+        engine    = Par.Parallelize(config, machine, None, [], mppb=recompute)
+        space     = engine.run_generation_to_ordering(None, None)[0]
+        dur       = space[3]
+        total     = sum(dur)
+        mapping   = {
             "COMPUTE": dur[0] + dur[1] + dur[2],
             "DP_COMM": dur[3], "MP_COMM": dur[4],
             "EP_COMM": dur[5], "CP_COMM": dur[6],
@@ -369,7 +410,6 @@ class Handler:
             self.calibrate_coefficients(actual_durations)
 
         # Build predictor rooted at the first (base) trace
-        # base_dims = self.meta['trace_dims_list'][0]
         base_dims = all_samples[0]["dims"]
         base_cd   = all_samples[0]["lane_totals"] if use_ewa else None
         predictor = Predictor(
@@ -378,10 +418,8 @@ class Handler:
             coeffs=self.optimized_coeffs,
         )
 
-        # Predict for each strategy
-        #nd_strats = self.get_strats_from_nd()
-        #nd_strats = self.meta['trace_dims_list']
-        nd_strats = [s["dims"] for s in all_samples] 
+        # Predict for each loaded trace config
+        nd_strats = [s["dims"] for s in all_samples]
         keys      = [str(k) for k in nd_strats[0].keys()]
         results   = []
 
@@ -403,12 +441,11 @@ class Handler:
 
         results.sort(key=lambda x: x[1])
 
-        # Build measured_map: normalised dims key → actual step µs
+        # Build measured_map: normalised dims tuple → actual step µs
         measured_map = {}
         for i, sample in enumerate(all_samples):
             if sample.get("mean_step_us") is not None:
-                #norm = {k.lower(): v for k, v in self.meta['trace_dims_list'][i].items()}
-                norm = {k.lower(): v for k, v in all_samples[i]["dims"].items()}
+                norm = {k.lower(): v for k, v in sample["dims"].items()}
                 measured_map[tuple(sorted(norm.items()))] = sample['mean_step_us']
 
         # ── Summary table ─────────────────────────────────────────────
@@ -433,7 +470,7 @@ class Handler:
             lane_vals  = "  ".join(f"{r_out.get(l, 0.0):>7.1f}" for l in lane_order)
             key        = tuple(sorted({k.lower(): v for k, v in pred_dims.items()}.items()))
             measured   = measured_map.get(key)
-            meas_str   = f"{measured:>10.0f}"  if measured is not None else f"{'—':>10}"
+            meas_str   = f"{measured:>10.0f}" if measured is not None else f"{'—':>10}"
             err_str    = (
                 f"{(total_time - measured) / measured * 100:>+7.1f}%"
                 if measured is not None else f"{'':>8}"
@@ -460,11 +497,8 @@ class Handler:
           3. Compare predicted vs actual (mean_step_us).
 
         Uses EWA path when lane_totals are present; Hockney fallback otherwise.
-        Requires at least 2 traces.
-
-        Returns list[dict] with keys:
-            trace_index, actual_µs, predicted_µs, abs_error_µs,
-            rel_error_%, lane_times
+        Requires at least 2 distinct configs; identical configs are skipped for
+        the cross-config fold since self-prediction is uninformative there.
         """
         n = len(self.paths['trace_paths'])
         if n < 2:
@@ -492,9 +526,9 @@ class Handler:
                 f"train on {[j+1 for j in train_idx]}, held-out = trace {held_out+1}"
             )
 
-            train_samples   = [all_samples[j]                       for j in train_idx]
-            train_classifs  = [all_classifications[j]                for j in train_idx]
-            train_dims_list = [self.meta['trace_dims_list'][j]       for j in train_idx]
+            train_samples   = [all_samples[j]         for j in train_idx]
+            train_classifs  = [all_classifications[j]  for j in train_idx]
+            train_dims_list = [all_samples[j]["dims"]  for j in train_idx]
 
             train_actual = []
             for j, s in enumerate(train_samples):
@@ -533,12 +567,12 @@ class Handler:
             except Exception as e:
                 print(f"[validate] Calibration failed: {e}. Using defaults.")
 
-            held_dims = self.meta['trace_dims_list'][held_out]
+            held_dims = all_samples[held_out]["dims"]
             base_dims = train_dims_list[0]
 
             if use_ewa:
-                base_cd   = train_samples[0]["lane_totals"]
-                predictor = Predictor({}, base_dims, coeffs=train_coeffs)
+                base_cd      = train_samples[0]["lane_totals"]
+                predictor    = Predictor({}, base_dims, coeffs=train_coeffs)
                 predicted_µs, lane_times = predictor.predict_from_lane_totals(base_cd, held_dims)
             else:
                 predictor    = Predictor(t_formula, base_dims, coeffs=train_coeffs)
@@ -581,17 +615,16 @@ def objective_fn(x, actual_times, bucket_data, vpps):
     """
     Overlap model:
         T = (COMPUTE + BUBBLE)
-          + PP_COMM                        fully serialised (coeff = 1)
+          + PP_COMM                        fully serialised
           + MP_COMM × coeff_mp             blocking allgather/reducescatter
           + max(DP_COMM × coeff_dp,
-                EP_COMM × coeff_ep)        async: only the slower one matters
-          + OPTIMIZER_SWAP                 weight-offload stalls compute
+                EP_COMM × coeff_ep)        async: only the slower matters
+          + OPTIMIZER_SWAP                 weight-offload stalls
+          + IDLE                           kernel launch overhead (included,
+                                           not a free param)
 
     Loss: sum of squared log-ratio errors (scale-invariant).
-
-    Excluded:
-        UNKNOWN_COMM  — overlap properties unknown
-        IDLE          — constant per-kernel launch overhead, not a free param
+    UNKNOWN_COMM excluded (overlap properties unknown).
     """
     mp_coeff, dp_coeff, ep_coeff = x[0], x[1], x[2]
     e   = 0.0
@@ -607,8 +640,8 @@ def objective_fn(x, actual_times, bucket_data, vpps):
             bt.get("EP_COMM", 0.0) * ep_coeff,
         )
         optimizer_swap = bt.get("OPTIMIZER_SWAP", 0.0)
+        idle           = bt.get("IDLE", 0.0)
 
-        idle = bt.get("IDLE", 0.0)
         t_pred = compute_bubble + blocking + async_comm + optimizer_swap + idle
 
         e += (maths.log10(max(t_pred, eps)) - maths.log10(max(actual_time, eps))) ** 2

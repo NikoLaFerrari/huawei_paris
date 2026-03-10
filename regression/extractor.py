@@ -14,7 +14,8 @@
 # ============================================================================
 """
 Extractor: parse trace files and IR graphs to produce per-primitive
-structured data points for Hockney regression.
+structured data points for Hockney regression, or load pre-extracted
+samples directly from cache pkl files.
 
 Data point schema
 ─────────────────
@@ -100,28 +101,19 @@ EWA correctly handles the parallel compute/comm streams — rather than
 summing raw event durations (which double-counts overlapping streams),
 it attributes time to whichever lane the compute stream was blocked on.
 
-Multi-rank deduplication in _get_classification
-────────────────────────────────────────────────
-MindSpore trace files may contain RunGraph events from multiple ranks
-under different PIDs covering the same time windows. find_step_events()
-returns all of them, making n_steps = 2× reality and halving every
-per-step value from summarize_wait_causes().
+Multi-PID deduplication in _get_classification
+───────────────────────────────────────────────
+MindSpore trace files may contain RunGraph events from multiple
+processes under different PIDs (e.g. rank 0 and rank 1 both present).
+find_step_events() returns all of them. We deduplicate by discarding
+any RunGraph event that overlaps >50% with the preceding kept event —
+these represent the same step seen from a second rank.
 
-Fix: deduplicate step events by timestamp overlap before passing to EWA.
-Two RunGraph events that overlap by >50% of their duration represent the
-same physical step seen from different ranks — only the first is kept.
-
-Cache schema (pkl files)
-────────────────────────
-Each pkl file written by run_extractor() has the structure:
-    {
-        "samples":        {data, dims, mean_step_us, lane_totals},
-        "classification": (cd, pctg),
-    }
-
-load_from_pkls() reads this format directly, normalising dim key names
-(TP→mp, DP→dp, PP→pp, EP→ep, VPP→vpp, MBS→mb) to the convention
-expected by _compute_scales in Predictor.
+Dim key normalisation
+─────────────────────
+Cache pkl files may store dims under framework-native keys (TP, CP, DP,
+PP, EP) rather than the mp/dp/pp/ep convention used by _compute_scales.
+load_from_pkls() normalises keys on load via _DIMS_KEY_MAP.
 """
 
 import re
@@ -150,10 +142,10 @@ _TRACE_SIZE_OPS = {"AlltoAllV", "AlltoAllVC", "Send", "Receive", "Broadcast"}
 # MatMul-family op types for which we can derive FLOPs from input shapes
 _MATMUL_OPS = {"MatMul", "MatMulExt", "BatchMatMul", "Dense"}
 
-# Normalise training-config dim key names to the mp/dp/pp/ep convention
-# used throughout Predictor._compute_scales.
-_DIM_KEY_MAP = {
-    "TP":  "mp",
+# Dim key normalisation: framework-native → internal convention (all lowercase)
+# Only MP is used for model/tensor parallelism — TP is not used in this framework.
+_DIMS_KEY_MAP = {
+    "MP":  "mp",
     "CP":  "cp",
     "DP":  "dp",
     "PP":  "pp",
@@ -161,27 +153,29 @@ _DIM_KEY_MAP = {
     "VPP": "vpp",
     "MBS": "mb",
     "MB":  "mb",
-    "MP":  "mp",
 }
 
 
 class Extractor:
     """
     Extracts per-primitive (size, duration, metadata) data points from
-    MindSpore trace files and their corresponding IR graphs.
+    MindSpore trace files and their corresponding IR graphs, or loads
+    pre-extracted samples from cache pkl files.
     """
 
-    def __init__(self, trace_paths, graph_dirs, config_paths):
+    def __init__(self, trace_paths=None, graph_dirs=None, config_paths=None):
         """
         Parameters
         ----------
-        trace_paths  : str | list[str]   paths to trace_view.json files
-        graph_dirs   : str | list[str]   paths to IR graph directories
-        config_paths : str | list[str]   paths to YAML training configs
+        trace_paths  : str | list[str] | None   paths to trace_view.json files
+        graph_dirs   : str | list[str] | None   paths to IR graph directories
+        config_paths : str | list[str] | None   paths to YAML training configs
+
+        All three may be None when using load_from_pkls() only.
         """
-        self.trace_paths  = [trace_paths]  if isinstance(trace_paths,  str) else trace_paths
-        self.graph_dirs   = [graph_dirs]   if isinstance(graph_dirs,   str) else graph_dirs
-        self.config_paths = [config_paths] if isinstance(config_paths, str) else config_paths
+        self.trace_paths  = ([trace_paths]  if isinstance(trace_paths,  str) else trace_paths)  or []
+        self.graph_dirs   = ([graph_dirs]   if isinstance(graph_dirs,   str) else graph_dirs)   or []
+        self.config_paths = ([config_paths] if isinstance(config_paths, str) else config_paths) or []
 
         self.lane_map = {
             "DP":                "DP_COMM",
@@ -204,7 +198,7 @@ class Extractor:
 
     def run_extractor(self):
         """
-        Main entry point.
+        Parse traces and IR graphs to produce samples.
 
         Returns
         -------
@@ -212,9 +206,9 @@ class Extractor:
             One entry per trace:
             {
                 "data":         {lane::primitive: [data_point, ...]},
-                "dims":         {mp, dp, pp, ep, ...},  (normalised keys)
+                "dims":         {mp, dp, pp, ep, ...},   normalised keys
                 "mean_step_us": float | None,
-                "lane_totals":  {lane: µs},   EWA-attributed per-step µs
+                "lane_totals":  {lane: µs},
             }
         all_classifications : list[tuple]
             One entry per trace: (raw_cd_dict, pctg_dict)
@@ -238,7 +232,8 @@ class Extractor:
 
             with open(self.config_paths[i], "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
-            parallel_dims = self._normalise_dims(get_parallel_dimensions(cfg))
+            raw_dims      = get_parallel_dimensions(cfg)
+            parallel_dims = self._normalise_dims(raw_dims)
 
             structured_data = {}
 
@@ -305,12 +300,12 @@ class Extractor:
         Load pre-extracted samples directly from cache pkl files,
         bypassing trace and IR graph parsing entirely.
 
-        Handles the cache schema:
-            {"samples": {data, dims, mean_step_us, lane_totals},
-             "classification": (cd, pctg)}
+        Handles two cache schemas:
+          - Flat:    pkl contains the sample dict directly
+          - Wrapped: pkl contains {"samples": <sample_dict>, "classification": ...}
 
-        Dim keys are normalised (TP→mp, DP→dp, etc.) so that
-        Predictor._compute_scales receives the expected key names.
+        Dim keys are normalised from framework-native names (TP, CP, DP, PP, EP)
+        to the internal convention (mp, cp, dp, pp, ep) used by _compute_scales.
 
         Parameters
         ----------
@@ -329,22 +324,36 @@ class Extractor:
             with open(path, "rb") as f:
                 d = pickle.load(f)
 
-            sample = d.get("samples", d)   # handle both wrapped and flat formats
+            # Unwrap if necessary
+            if isinstance(d, dict) and "samples" in d:
+                sample = d["samples"]
+            else:
+                sample = d
+
             if not isinstance(sample, dict):
-                print(f"[extractor] WARNING: unexpected pkl format in {path}, skipping.")
+                print(f"[extractor] WARNING: unexpected pkl schema in {path}, skipping.")
                 continue
 
             # Normalise dim keys
-            sample["dims"] = self._normalise_dims(sample.get("dims", {}))
+            raw_dims = sample.get("dims", {})
+            sample["dims"] = self._normalise_dims(raw_dims)
 
-            lt    = sample.get("lane_totals", {})
+            # Validate lane_totals present
+            lt = sample.get("lane_totals")
+            if not lt:
+                print(
+                    f"[extractor] WARNING: {path} has no lane_totals — "
+                    f"pre-EWA cache entry. Re-extract from trace for EWA path."
+                )
+                lt = {}
+
             total = sum(lt.values()) or 1.0
             pctg  = {k: v / total * 100 for k, v in lt.items()}
 
             print(
                 f"[extractor]   dims={sample['dims']}  "
                 f"mean_step={sample.get('mean_step_us', 0)/1e6:.4f}s  "
-                f"sum(lane_totals)={sum(lt.values())/1e6:.4f}s"
+                f"sum(lt)={sum(lt.values())/1e6:.4f}s"
             )
 
             all_samples.append(sample)
@@ -361,10 +370,6 @@ class Extractor:
         """
         Return a list of (ts_start, ts_end) intervals covering only
         steady-state training steps.
-
-        The first 1–2 steps contain ACL/CUDA graph capture overhead,
-        cold HBM cache misses, and JIT compilation — excluded to avoid
-        biasing α upward and contaminating β.
 
         Returns None when not enough steps are present (keep all events).
         """
@@ -466,8 +471,7 @@ class Extractor:
         Return the physically correct message size n for a collective.
 
         AllGather / ReduceScatter / AllReduce: use input tensor size from IR.
-        AlltoAllV / AlltoAllVC: use count × dtype_size from trace args.
-        Send / Receive / Broadcast: use trace_size.
+        AlltoAllV / AlltoAllVC / Send / Receive / Broadcast: use trace_size.
         Fallback: trace_size.
         """
         if op_type in _INPUT_SIZE_OPS:
@@ -535,7 +539,6 @@ class Extractor:
 
         x_bytes = float(self._get_total_output_size(op) or 1)
         x_flops = self._get_flops(op_type, op)
-        print(f"[extractor] {primitive} flops: {x_flops}")
         x       = float(x_flops) if x_flops is not None else x_bytes
 
         return {
@@ -563,20 +566,17 @@ class Extractor:
         Returns (raw_cd_dict, pctg_dict).
 
         raw_cd_dict values are per-step µs from summarize_wait_causes(),
-        which attributes time causally from the compute stream perspective.
-        EWA correctly handles parallel compute/comm streams — rather than
-        summing raw event durations (which double-counts overlapping streams)
-        it asks "what was the compute stream blocked on?" at each moment.
+        attributed causally from the compute stream perspective. EWA
+        correctly handles the parallel compute/comm streams — rather than
+        summing event durations (which double-counts overlapping streams),
+        it attributes time to whichever lane the compute stream was blocked on.
 
-        Multi-rank deduplication
-        ────────────────────────
-        MindSpore trace files may contain RunGraph events from multiple ranks
-        covering the same time windows. find_step_events() returns all of
-        them, making n_steps = 2× reality and halving every per-step value.
-
-        Fix: deduplicate by timestamp overlap before passing to EWA. Two
-        RunGraph events that overlap by >50% of their duration represent the
-        same physical step — only the first is kept.
+        Multi-PID deduplication
+        ───────────────────────
+        Trace files may contain RunGraph events from multiple ranks. We
+        deduplicate by discarding any event that overlaps >50% with the
+        preceding kept event — these represent the same step from a second
+        rank and would cause EWA to divide per-step values by 2×.
 
         EWA key → lane mapping
         ──────────────────────
@@ -626,12 +626,12 @@ class Extractor:
         )
         wait_causes = analyzer.find_wait_causes(wait_events, delaying_events)
 
-        # ── Step events: deduplicate overlapping multi-rank events ─────
+        # ── Step events: deduplicate overlapping multi-rank markers ───
         # Traces may contain RunGraph events from 2+ ranks covering the
-        # same time windows. EWA divides by n_steps — duplicate step events
-        # halve every per-step value. Deduplicate: if two events overlap by
-        # >50% of their duration they represent the same step — keep only
-        # the first (sorted by timestamp).
+        # same time windows. EWA divides by n_steps — duplicates halve
+        # every per-step value. Deduplicate: if two events overlap by
+        # >50% of their duration they represent the same step; keep only
+        # the first.
         all_step_events = sorted(
             ms_trace.find_step_events(process_info, "RunGraph"),
             key=lambda d: d["ts"]
@@ -643,14 +643,17 @@ class Extractor:
                 continue
             prev     = deduped[-1]
             prev_end = prev["ts"] + prev["dur"]
-            overlap  = max(0.0, min(prev_end, e["ts"] + e["dur"]) - max(prev["ts"], e["ts"]))
+            overlap  = max(
+                0.0,
+                min(prev_end, e["ts"] + e["dur"]) - max(prev["ts"], e["ts"])
+            )
             if overlap / max(e["dur"], 1.0) > 0.5:
-                continue   # same step seen from another rank — skip
+                continue   # same step from another rank — skip
             deduped.append(e)
 
         if len(deduped) != len(all_step_events):
             print(
-                f"[extractor] Deduped {len(all_step_events)} → {len(deduped)} "
+                f"[extractor] Deduped {len(all_step_events)} -> {len(deduped)} "
                 f"RunGraph events (overlapping multi-rank step markers removed)."
             )
         step_events = deduped
@@ -725,7 +728,7 @@ class Extractor:
             lane = ewa_to_lane.get(key, "UNKNOWN_COMM")
             cd[lane] += val
 
-        # ── Sanity: warn on unexpected ratio or unmapped keys ─────────
+        # ── Sanity: warn on large unexplained discrepancy ─────────────
         cd_sum = sum(cd.values())
         if ewa_step_time > 0:
             ratio = cd_sum / ewa_step_time
@@ -750,10 +753,7 @@ class Extractor:
 
     @staticmethod
     def _get_input_size(op):
-        """
-        Return first input tensor size in bytes, or None if unavailable.
-        Used for AllGather / ReduceScatter / AllReduce.
-        """
+        """Return first input tensor size in bytes, or None."""
         if op is None or not op.input_tensors:
             return None
         for t in op.input_tensors:
@@ -774,10 +774,7 @@ class Extractor:
 
     @staticmethod
     def _get_total_output_size(op):
-        """
-        Return the sum of all output tensor sizes in bytes.
-        Captures ops with multiple outputs (e.g. SplitWithSize).
-        """
+        """Return sum of all output tensor sizes in bytes."""
         if op is None or not op.output_tensors:
             return None
         total = 0
@@ -798,10 +795,7 @@ class Extractor:
 
     @staticmethod
     def _get_group_size(op):
-        """
-        Return the actual collective group size p from group_rank_ids.
-        Falls back to -1 if the attribute is absent.
-        """
+        """Return collective group size from group_rank_ids, or -1."""
         if op is None or not op.has_prim_attrs():
             return -1
         prim = op.prim_attrs()
@@ -814,10 +808,7 @@ class Extractor:
 
     @staticmethod
     def _is_fused(op):
-        """
-        Return True if the op has a compiler fusion key, meaning its IR
-        tensor sizes may not reflect the actual execution boundary.
-        """
+        """Return True if op has a compiler fusion key."""
         if op is None or not op.has_cnode_prim_attrs():
             return False
         cpa = op.cnode_prim_attrs()
@@ -826,9 +817,7 @@ class Extractor:
     @staticmethod
     def _get_pass_type_from_scope(raw_scope, op=None):
         """
-        Determine whether this op belongs to the forward, backward, or
-        recompute pass.
-
+        Determine forward / backward / recompute pass type.
         Priority: op.is_recompute() > op.is_backward() > op.is_forward()
         > scope string heuristics.
         """
@@ -852,11 +841,6 @@ class Extractor:
     def _get_flops(op_type, op):
         """
         Derive FLOPs from input tensor shapes for MatMul-family ops.
-
-        MatMul / MatMulExt    : inputs [M, K] × [K, N]  →  2·M·K·N
-        BatchMatMul           : inputs [B, M, K] × [B, K, N]  →  2·B·M·K·N
-        Dense (linear layer)  : inputs [B, in] × [in, out]  →  2·B·in·out
-
         Returns int or None.
         """
         if op_type not in _MATMUL_OPS:
@@ -883,9 +867,9 @@ class Extractor:
                 return 2 * B * M * K * N
 
             if len(s0) >= 2 and len(s1) >= 2:
-                M = s0[-2]
-                K = s0[-1]
-                N = s1[-1]
+                M     = s0[-2]
+                K     = s0[-1]
+                N     = s1[-1]
                 batch = 1
                 for d in s0[:-2]:
                     batch *= d
@@ -903,26 +887,24 @@ class Extractor:
     @staticmethod
     def _normalise_dims(dims):
         """
-        Normalise parallel dimension key names to the lowercase mp/dp/pp/ep
-        convention expected by Predictor._compute_scales.
+        Normalise parallel dimension keys from framework-native names
+        (TP, CP, DP, PP, EP, VPP, MBS) to the internal convention
+        (mp, cp, dp, pp, ep, vpp, mb) used by _compute_scales.
 
-        Handles both uppercase config keys (TP, DP, PP, EP, VPP, MBS) and
-        already-lowercase keys transparently.
+        Unknown keys are lowercased and passed through unchanged.
         """
-        result = {}
+        normalised = {}
         for k, v in dims.items():
-            normalised = _DIM_KEY_MAP.get(k.upper(), k.lower())
-            result[normalised] = v
-        return result
+            norm_key = _DIMS_KEY_MAP.get(k.upper(), k.lower())
+            normalised[norm_key] = v
+        return normalised
 
     @staticmethod
     def _get_mean_step_time(process_info, warmup_steps=2):
         """
         Return mean wall-clock step duration in µs from RunGraph events.
-
-        Uses steady-state steps (after warmup) when enough steps are present.
-        Falls back to mean of all steps for short traces.
-        Returns None only if no RunGraph events exist at all.
+        Falls back to all steps for short traces.
+        Returns None only if no RunGraph events exist.
         """
         step_events = ms_trace.find_step_events(process_info, "RunGraph")
         if not step_events:
