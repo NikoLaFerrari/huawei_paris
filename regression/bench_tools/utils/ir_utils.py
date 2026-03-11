@@ -101,28 +101,28 @@ def get_scope_op_map(parsed_graph: G.Graph) -> dict[str, G.Operator]:
 
 
 def get_coords(
-    rank, dimensions, parallel_order=["TP", "CP", "DP", "PP"]
+    rank, dimensions, parallel_order=["MP", "CP", "DP", "PP"]
 ) -> dict[str, int]:
     """
     :param rank: Device ID
-    :param dimensions: for example {'TP': 2, 'CP': 2, 'DP': 4, 'PP': 2}
+    :param dimensions: for example {'MP': 2, 'CP': 2, 'DP': 4, 'PP': 2}
     :param parallel_order: the order parallelization of machines, from fine to corse grain
     :return: coords on all dimensions
     """
     coords = {}
 
-    for name in parallel_order:
+    for name in dimensions:
         coords[name] = rank % dimensions[name]
         rank //= dimensions[name]
     return coords
 
 
 def get_communication_domains(
-    op: G.Operator, dimensions, parallel_order=["TP", "CP", "DP", "PP"]
+    op: G.Operator, dimensions, parallel_order=["MP", "CP", "DP", "PP"]
 ) -> list[str]:
     """
     :param op: Operator
-    :param dimensions: for example {'TP': 2, 'CP': 2, 'DP': 4, 'PP': 2}
+    :param dimensions: for example {'MP': 2, 'CP': 2, 'DP': 4, 'PP': 2}
     :param parallel_order: the order parallelization of machines, from fine to corse grain
     :return: list of communication domain
     """
@@ -135,7 +135,7 @@ def get_communication_domains(
             ]
             varying_dims = []
 
-            for dim in parallel_order:
+            for dim in dimensions: #parallel_order:
                 if not all(
                     c[dim] == coords[0][dim] for c in coords
                 ):  # if more than one rank in this dimension
@@ -150,7 +150,7 @@ def get_parallel_dimensions(
     config,
 ) -> dict[str, int]:  # for coords and communication domains
     """
-    extract TP-CP-DP-PP sizes from a benchmark YAML config dict
+    extract MP-CP-DP-PP sizes from a benchmark YAML config dict
     """
     return {
         "MP": config["parallel_config"].get("model_parallel", 1),

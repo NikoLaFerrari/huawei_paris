@@ -53,7 +53,7 @@ class Handler:
         self.cache_dir            = os.path.join(curr_dir, "cache")
         self.extraction_cache_dir = os.path.join(curr_dir, "extraction_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
-        self.optimized_coeffs = {"mp": 0.95, "dp": 0.10, "ep": 0.40}
+        self.optimized_coeffs = {"mp": 0.95, "dp": 0.5, "ep": 0.40}
 
         for path in self.paths['config_paths']:
             with open(path, "r", encoding='utf-8') as f:
@@ -84,7 +84,7 @@ class Handler:
 
         dp = pc.get("data_parallel", 1)
         mp = pc.get("model_parallel", 1)
-        pp = pc.get("pipeline_parallel", 1)
+        pp = pc.get("pipeline_stage", 1)
         ep = pc.get("expert_parallel", 1)
         vpp = pc.get("pp_interleave_num", 1)
 
@@ -159,7 +159,7 @@ class Handler:
             extractor = Extractor(
                 self.paths['trace_paths'],
                 self.paths['graph_paths'],
-                self.paths['config_paths'],
+                self.meta['trace_dims_list'],
             )
             all_samples, all_classifications = extractor.load_from_pkls(pkl_files)
 
@@ -169,15 +169,8 @@ class Handler:
                 # Config ordering may differ from pkl ordering — match by
                 # the dims that ARE present (mp, dp, pp).
                 for i, sample in enumerate(all_samples):
-                    pkl_dims    = sample["dims"]
-                    config_dims = self.meta['trace_dims_list'][i]
-                    for k, v in config_dims.items():
-                        if k not in pkl_dims:
-                            pkl_dims[k] = v
+                    pkl_dims    = self.meta['trace_dims_list'][i]
                     # Ensure no TP key leaks through — rename to mp
-                    if "tp" in pkl_dims and "mp" not in pkl_dims:
-                        pkl_dims["mp"] = pkl_dims.pop("tp")
-                    pkl_dims.pop("tp", None)   # remove stale tp if mp already set
                     print(
                         f"[extractor]   Trace {i+1} enriched dims: {pkl_dims}"
                     )
@@ -191,9 +184,9 @@ class Handler:
         # ── Full extraction fallback ───────────────────────────────────
         trace_paths  = self.paths['trace_paths']
         graph_paths  = self.paths['graph_paths']
-        config_paths = self.paths['config_paths']
+        config_dims = self.meta['trace_dims_list'] #self.paths['config_paths']
 
-        extractor = Extractor(trace_paths, graph_paths, config_paths)
+        extractor = Extractor(trace_paths, graph_paths, config_dims)
         new_samples, new_classifications = extractor.run_extractor()
 
         os.makedirs(self.extraction_cache_dir, exist_ok=True)
@@ -233,7 +226,7 @@ class Handler:
 
         res = minimize(
             objective_fn,
-            [0.95, 0.1, 0.4],
+            [0.5, 0.5, 0.5],
             args=(actual_dur, all_bucket_data, vpps),
             bounds=[(0, 1)] * 3,
             method="L-BFGS-B",
@@ -295,14 +288,6 @@ class Handler:
                 f"err={err_pct:+.1f}%"
             )
 
-    # ------------------------------------------------------------------ #
-    #  ND interface helpers                                                #
-    # ------------------------------------------------------------------ #
-
-    # ------------------------------------------------------------------ #
-    #  Base-sample selection                                               #
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _closest_sample(all_samples, target_dims):
         """
@@ -317,28 +302,24 @@ class Handler:
         def distance(s):
             d = s["dims"]
             return (
-                abs(maths.log(max(d.get("mp", 1), 1) / max(target_dims.get("mp", 1), 1)))
-                + abs(maths.log(max(d.get("dp", 1), 1) / max(target_dims.get("dp", 1), 1)))
-                + abs(maths.log(max(d.get("pp", 1), 1) / max(target_dims.get("pp", 1), 1)))
+                abs(maths.log(max(d.get("MP", 1), 1) / max(target_dims.get("MP", 1), 1)))
+                + abs(maths.log(max(d.get("DP", 1), 1) / max(target_dims.get("DP", 1), 1)))
+                + abs(maths.log(max(d.get("PP", 1), 1) / max(target_dims.get("pp", 1), 1)))
             )
         return min(all_samples, key=distance)
 
     def get_strats_from_nd(self):
         with open(self.input_config, 'r') as f:
             raw = yaml.safe_load(f)
-        pc = raw.get('parallel_config')
-        parallel = {
-            'pp': pc.get('pipeline_parallel', 1),
-            'mp': pc.get('model_parallel',    1),
-            'dp': pc.get('data_parallel',     1),
-            'ep': pc.get('expert_parallel',   1),
-        }
-        device_count = self.input_dims.get("deivce_count")# parallel['pp'] * parallel['mp'] * parallel['dp'])
+        device_count = self.input_dims.get("device_count")# parallel['pp'] * parallel['mp'] * parallel['dp'])
         machine   = Har.Machine(device_count, 2)
         recompute = raw.get('recompute_config').get('recompute')
         engine    = Par.Parallelize(
-            self.input_config, machine, self.input_dims['gbs'],
-            Dim.get_dims(self.input_dims['dims']), mppb=recompute,
+            self.input_config, 
+            machine, 
+            self.input_dims['gbs'],
+            Dim.get_dims(self.input_dims['dims']), 
+            mppb=recompute,
         )
         strategies = engine.run_generation_to_ordering(None, None)
         return [s[0] for s in strategies]

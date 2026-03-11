@@ -163,7 +163,7 @@ class Extractor:
     pre-extracted samples from cache pkl files.
     """
 
-    def __init__(self, trace_paths=None, graph_dirs=None, config_paths=None):
+    def __init__(self, trace_paths=None, graph_dirs=None, config_dims=None):
         """
         Parameters
         ----------
@@ -175,7 +175,8 @@ class Extractor:
         """
         self.trace_paths  = ([trace_paths]  if isinstance(trace_paths,  str) else trace_paths)  or []
         self.graph_dirs   = ([graph_dirs]   if isinstance(graph_dirs,   str) else graph_dirs)   or []
-        self.config_paths = ([config_paths] if isinstance(config_paths, str) else config_paths) or []
+        self.config_dims  = ([config_dims] if isinstance(config_dims, dict) else config_dims) or []
+        #self.config_paths = ([config_paths] if isinstance(config_paths, str) else config_paths) or []
 
         self.lane_map = {
             "DP":                "DP_COMM",
@@ -220,7 +221,6 @@ class Extractor:
         for i in range(len(self.trace_paths)):
             print(f"[extractor] ── Trace {i + 1} / {len(self.trace_paths)} ──")
             process_info = prof.parse_process_info(self.trace_paths[i])
-
             windows      = self._get_steady_state_windows(process_info)
             mean_step_us = self._get_mean_step_time(process_info)
 
@@ -230,10 +230,9 @@ class Extractor:
             )
             graph_scope_map = get_scope_op_map(graph_obj)
 
-            with open(self.config_paths[i], "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            raw_dims      = get_parallel_dimensions(cfg)
+            raw_dims      = self.config_dims[i] #get_parallel_dimensions(cfg)
             parallel_dims = self._normalise_dims(raw_dims)
+            keys = [str(k) for k in parallel_dims.keys()]
 
             structured_data = {}
 
@@ -319,7 +318,7 @@ class Extractor:
         all_samples         = []
         all_classifications = []
 
-        for path in pkl_paths:
+        for i, path in enumerate(pkl_paths):
             print(f"[extractor] Loading pkl: {path}")
             with open(path, "rb") as f:
                 d = pickle.load(f)
@@ -335,7 +334,7 @@ class Extractor:
                 continue
 
             # Normalise dim keys
-            raw_dims = sample.get("dims", {})
+            raw_dims = self.config_dims[i]
             sample["dims"] = self._normalise_dims(raw_dims)
 
             # Validate lane_totals present
@@ -351,7 +350,7 @@ class Extractor:
             pctg  = {k: v / total * 100 for k, v in lt.items()}
 
             print(
-                f"[extractor]   dims={sample['dims']}  "
+                f"[extractor]   dims={raw_dims}  "
                 f"mean_step={sample.get('mean_step_us', 0)/1e6:.4f}s  "
                 f"sum(lt)={sum(lt.values())/1e6:.4f}s"
             )
@@ -411,7 +410,7 @@ class Extractor:
     #  Communication extraction                                            #
     # ------------------------------------------------------------------ #
 
-    def _extract_comm_point(self, event, graph_scope_map, parallel_dims, comm_classifier):
+    def _extract_comm_point(self, event, graph_scope_map, parallel_dims, comm_classifier, parallel_order=None):
         """
         Extract a single communication data point.
 
@@ -895,7 +894,7 @@ class Extractor:
         """
         normalised = {}
         for k, v in dims.items():
-            norm_key = _DIMS_KEY_MAP.get(k.upper(), k.lower())
+            norm_key = k.upper()
             normalised[norm_key] = v
         return normalised
 

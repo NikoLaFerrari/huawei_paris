@@ -3,8 +3,8 @@ import os
 
 input_dims = {
         'dims': ['DP','MP','PP','MB','MBS'],
-        'device_count': 8,
-        'gbs': 64
+        'device_count': 32,
+        'gbs': 128
         }
 
 trace_path = [
