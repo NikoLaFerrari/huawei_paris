@@ -76,24 +76,35 @@ class Handler:
         _compute_scales in Predictor always receives consistent key names
         regardless of whether the source is a config file or a pkl.
         """
-        pc         = raw_cfg.get("parallel_config", {})
-        model_cfg  = raw_cfg.get("model", {}).get("model_config", {})
-        runner_cfg = raw_cfg.get('runner_config')
-        gbs        = runner_cfg.get("batch_size")
-        dp         = pc.get("data_parallel", 1)
-        mb_num     = pc.get("micro_batch_num", 1)
-        mb         = max(1, gbs // (dp * mb_num))
-        model_name        = raw_cfg.get("trainer").get("model_name")
-        recompute_enabled = raw_cfg.get("recompute_config").get("recompute")
-        # Use "mp" throughout — never "tp" or "TP"
+        pc = raw_cfg.get("parallel_config")
+        model_cfg = raw_cfg.get("model").get("model_config")
+        runner_cfg = raw_cfg.get("runner_config")
+        trainer_cfg = raw_cfg.get("trainer")
+        recompute_cfg = raw_cfg.get("recompute_config")
+
+        dp = pc.get("data_parallel", 1)
+        mp = pc.get("model_parallel", 1)
+        pp = pc.get("pipeline_parallel", 1)
+        ep = pc.get("expert_parallel", 1)
+        vpp = pc.get("pp_interleave_num", 1)
+
+        mb_num = pc.get("micro_batch_num", 1)
+        mb_size = runner_cfg.get("batch_size", 1)
+        gb_size = dp * mb_size * mb_num
+
+        model_name = trainer_cfg.get("model_name")
+        recompute_enabled = recompute_cfg.get("recompute")
+
         return (
             {
-                "dp":  dp,
-                "mp":  pc.get("model_parallel", pc.get("tensor_parallel", 1)),
-                "pp":  pc.get("pipeline_stage", 1),
-                "ep":  pc.get("expert_parallel", 1),
-                "mb":  mb,
-                "vpp": model_cfg.get("pp_interleave_num", 1),
+                'dp': dp,
+                'mp': mp,
+                'pp': pp,
+                'ep': ep,
+                'vpp': vpp,
+                'mb': mb_size,
+                'gbs': gb_size,
+                'mb_num': mb_num,
             },
             model_name,
             recompute_enabled,
@@ -468,6 +479,17 @@ class Handler:
 
             results.append((pred_dims, total_time, r_out))
 
+                # Fold OPTIMIZER_SWAP and IDLE into BUBBLE for reporting only
+        folded_results = []
+        for pred_dims, total_time, r_out in results:
+            r_print = dict(r_out)
+            r_print["BUBBLE"] = (
+                r_print.get("BUBBLE", 0.0)
+                + r_print.pop("OPTIMIZER_SWAP", 0.0)
+                + r_print.pop("IDLE", 0.0)
+            )
+            folded_results.append((pred_dims, total_time, r_print))
+        results = folded_results
         results.sort(key=lambda x: x[1])
 
         # Build measured_map: normalised dims tuple → actual step µs

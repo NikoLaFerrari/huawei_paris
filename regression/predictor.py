@@ -267,50 +267,52 @@ class Predictor:
         b = self.base_dims
         p = pred_dims
 
-        dp_b  = _get(b, "dp");   mp_b  = _get(b, "mp")
-        pp_b  = _get(b, "pp");   ep_b  = _get(b, "ep")
-        gbs_b = _get(b, "gbs") or 1
-        mb_b  = _get(b, "mb", "mbs") or 1
+        dp_b   = _get(b, "dp")
+        mp_b   = _get(b, "mp")
+        pp_b   = _get(b, "pp")
+        ep_b   = _get(b, "ep")
+        gbs_b  = _get(b, "gbs") or 1
+        mbs_b  = _get(b, "mbs", "mb") or 1
+        mbn_b  = _get(b, "mb_num") or max(1, gbs_b // (dp_b * mbs_b))
 
-        dp_t  = _get(p, "dp")  if _has(p, "dp")  else dp_b
-        mp_t  = _get(p, "mp")  if _has(p, "mp")  else mp_b
-        pp_t  = _get(p, "pp")  if _has(p, "pp")  else pp_b
-        ep_t  = _get(p, "ep")  if _has(p, "ep")  else ep_b
-        gbs_t = _get(p, "gbs") if _has(p, "gbs") else gbs_b
-        mb_t  = _get(p, "mb", "mbs") if _has(p, "mb", "mbs") else mb_b
+        dp_t   = _get(p, "dp") if _has(p, "dp") else dp_b
+        mp_t   = _get(p, "mp") if _has(p, "mp") else mp_b
+        pp_t   = _get(p, "pp") if _has(p, "pp") else pp_b
+        ep_t   = _get(p, "ep") if _has(p, "ep") else ep_b
+        gbs_t  = _get(p, "gbs") if _has(p, "gbs") else gbs_b
+        mbs_t  = _get(p, "mbs", "mb") if _has(p, "mbs", "mb") else mbs_b
+        mbn_t  = _get(p, "mb") if _has(p, "mb") else max(1, gbs_t // (dp_t * mbs_t))
 
-        # num_microbatches ratio: how many more/fewer microbatches in target
-        num_mb_ratio = (gbs_t * dp_b * mb_b) / (gbs_b * dp_t * mb_t)
+        '''
+        elif lane == "BUBBLE":
+            pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
+            return pp_scale * (mbs_t / mbs_b) * (mp_b / mp_t)
+        '''
 
         if lane == "COMPUTE":
-            # Total ∝ GBS / (DP × mp); MB cancels
-            return (dp_b * mp_b) / (dp_t * mp_t) * (gbs_t / gbs_b)
+            return (gbs_t / gbs_b) * (dp_b / dp_t) * (mp_b / mp_t)
 
         elif lane == "BUBBLE":
-            # Total ∝ (pp−1) × MB / mp; DP does not appear
             pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
-            return pp_scale * (mb_t / mb_b) * (mp_b / mp_t)
+            return pp_scale
+            
 
         elif lane == "MP_COMM":
-            # Total ∝ num_mb × (H²/mp) × ring_bw_correction
-            # bandwidth-dominated approximation
-            return num_mb_ratio * (mp_b / mp_t) * _ring_bw_scale(mp_b, mp_t)
+            return (mbn_t / mbn_b) * (mp_b / mp_t) * _ring_bw_scale(mp_b, mp_t)
 
         elif lane == "PP_COMM":
-            # Total bandwidth ∝ GBS × (pp−1) / DP; MB cancels
             pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
             return pp_scale * (dp_b / dp_t) * (gbs_t / gbs_b)
 
         elif lane == "EP_COMM":
-            # Total bandwidth ∝ GBS / (DP × ep); MB cancels
             return (ep_b / ep_t) * (dp_b / dp_t) * (gbs_t / gbs_b)
 
         elif lane == "DP_COMM":
-            # Fires once per step; size ∝ param_count/mp; bandwidth dominated
             return (mp_b / mp_t) * _ring_bw_scale(dp_b, dp_t)
 
         else:
             return 1.0
+       
 
     # ------------------------------------------------------------------ #
     #  Overlap model (shared by both paths)                               #
@@ -401,6 +403,8 @@ class Predictor:
         variable       = f.get("variable", "bytes")
         pass_type      = f.get("pass_type", "unknown")
         op_type        = f.get("op_type",   "unknown")
+        low_conf       = f.get("low_confidence")
+        r2             = f.get("r2")
 
         lane = part_key.split("::")[0]
 
@@ -410,6 +414,8 @@ class Predictor:
         if lane == "DP_COMM" and _get_dim(pred_dims, "dp", self.base_dims) <= 1:
             return 0.0
         if lane == "EP_COMM" and _get_dim(pred_dims, "ep", self.base_dims) <= 1:
+            return 0.0
+        if lane == "PP_COMM" and _get_dim(pred_dims, "pp", self.base_dims) <= 1:
             return 0.0
 
         # ── Determine n_scale ─────────────────────────────────────────
@@ -423,7 +429,7 @@ class Predictor:
             n_analytical_target = _analytical_comm_n(op_type, self.arch, pred_dims)
             if n_analytical_target is not None and n_analytical_target > 0:
                 n_scale_comm = n_analytical_target / n_analytical_base
-                alpha_scale, _, beta_scale = self._compute_scales(
+                alpha_scale, _, beta_scale, count_scale = self._compute_scales(
                     lane, pred_dims, f, pass_type, variable
                 )
                 alpha_eff     = alpha * alpha_scale
@@ -434,20 +440,41 @@ class Predictor:
                     time_per_call = alpha_eff + (n_eff * beta_scale) / beta
                 return max(0.0, time_per_call * count_per_step)
 
+        if low_conf and r2<0.2:
+            alpha = f["alpha"]
+            count_per_step = f["count_per_step"]
+
+            # Scale only count for per-microbatch comm lanes; otherwise keep constant
+            if lane == "MP_COMM":
+                mbn_b = _get(self.base_dims, "mb_num") or 1
+                mbn_t = _get(pred_dims, "mb_num") if _has(pred_dims, "mb_num") else mbn_b
+                return max(0.0, alpha * count_per_step * (mbn_t / mbn_b))
+
+            if lane == "PP_COMM":
+                mbn_b = _get(self.base_dims, "mb_num") or 1
+                mbn_t = _get(pred_dims, "mb_num") if _has(pred_dims, "mb_num") else mbn_b
+                pp_b = _get(self.base_dims, "pp")
+                pp_t = _get(pred_dims, "pp") if _has(pred_dims, "pp") else pp_b
+                pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
+                return max(0.0, alpha * count_per_step * (mbn_t / mbn_b) * pp_scale)
+
+            return max(0.0, alpha * count_per_step)
+
         # ── Legacy _compute_scales path ───────────────────────────────
-        alpha_scale, n_scale, beta_scale = self._compute_scales(
+        alpha_scale, n_scale, beta_scale, count_scale = self._compute_scales(
             lane, pred_dims, f, pass_type, variable
         )
 
         alpha_eff = alpha * alpha_scale
         n_eff     = n_mean * n_scale
+        count_eff = count_per_step * count_scale
 
         if beta == float("inf") or beta <= 0.0:
             time_per_call = alpha_eff
         else:
             time_per_call = alpha_eff + (n_eff * beta_scale) / beta
 
-        return max(0.0, time_per_call * count_per_step)
+        return max(0.0, time_per_call * count_eff)
 
     # ------------------------------------------------------------------ #
     #  Scaling rules                                                       #
@@ -486,78 +513,81 @@ class Predictor:
         mp_b = _get(b, "mp")
         pp_b = _get(b, "pp")
         ep_b = _get(b, "ep")
+        mbn_b = _get(b, "mb_num")
+        mbs_b = _get(b, "mbs")
         gbs_b = _get(b, "gbs") or 1
 
         dp_t = _get(p, "dp") if _has(p, "dp") else dp_b
         mp_t = _get(p, "mp") if _has(p, "mp") else mp_b
         pp_t = _get(p, "pp") if _has(p, "pp") else pp_b
         ep_t = _get(p, "ep") if _has(p, "ep") else ep_b
+        mbn_t = _get(p, "mb") if _has(p, "mb") else mbn_b
+        mbs_t = _get(p, "mbs") if _has(p, "mbs") else mbs_b
         gbs_t = _get(p, "gbs") if _has(p, "gbs") else gbs_b
 
         gbs_scale = gbs_t / gbs_b if gbs_b > 0 else 1.0
-
-        measured_p_base = (f.get("group_size", -1) if f else -1)
-
+        measured_p_base = f.get("group_size", -1) if f else -1
+        '''
+        elif lane == "BUBBLE":
+            pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
+            alpha_scale = pp_scale * (mbs_t / mbs_b) * (mp_b / mp_t)
+            beta_scale = 1.0
+            n_scale = 1.0
+        '''
         if lane == "DP_COMM":
-            # AllReduce fires once per step — GBS does not affect gradient size
-            p_base      = measured_p_base if measured_p_base > 0 else dp_b
+            p_base = measured_p_base if measured_p_base > 0 else dp_b
             alpha_scale = _ring_hop_scale(p_base, dp_t)
-            beta_scale  = _ring_bw_scale(p_base, dp_t)
-            n_scale     = mp_b / mp_t          # gradient sharded by mp; no GBS factor
+            beta_scale = _ring_bw_scale(p_base, dp_t)
+            n_scale = mp_b / mp_t
+            count_scale = 1.0
 
         elif lane == "MP_COMM":
-            # AllGather/ReduceScatter per layer per microbatch
-            # count_per_step ∝ num_mb = GBS/(DP×MB); n_per_call ∝ H²/mp
-            mb_b        = _get(b, "mb", "mbs") or 1
-            mb_t        = _get(p, "mb", "mbs") if _has(p, "mb", "mbs") else mb_b
-            p_base      = measured_p_base if measured_p_base > 0 else mp_b
+            p_base = measured_p_base if measured_p_base > 0 else mp_b
             alpha_scale = _ring_hop_scale(p_base, mp_t)
-            beta_scale  = _ring_bw_scale(p_base, mp_t)
-            # n_scale captures: per-call size (mp_b/mp_t) × count (gbs,dp,mb)
-            n_scale     = (mp_b / mp_t) * gbs_scale * (dp_b / dp_t) * (mb_b / mb_t)
+            beta_scale = _ring_bw_scale(p_base, mp_t)
+            n_scale = (mbn_t / mbn_b) * (mp_b / mp_t)
+            count_scale = mbn_t / mbn_b
 
         elif lane == "EP_COMM":
-            # AlltoAllV per microbatch → scales with tokens per step
             alpha_scale = 1.0
-            beta_scale  = 1.0
-            # n_per_call = tokens_per_mb × top_k × H / ep  (tokens_per_mb fixed)
-            # count_per_step scales with dp_b/dp_t (fewer dp → more microbatches)
-            # total: n_scale = (ep_b/ep_t) × (dp_b/dp_t) × (gbs_t/gbs_b)
-            n_scale     = (ep_b / ep_t) * (dp_b / dp_t) * gbs_scale
+            beta_scale = 1.0
+            n_scale = (ep_b / ep_t) * (dp_b / dp_t) * gbs_scale
+            count_scale = mbn_t / mbn_b
 
         elif lane == "PP_COMM":
-            # Send/Receive per microbatch; n_per_call ∝ MB×seq×H; MB cancels
-            # Total bandwidth ∝ GBS × (pp−1) × H / DP
-            pp_scale    = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
+            pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
             alpha_scale = 1.0
-            beta_scale  = 1.0
-            n_scale     = pp_scale * (dp_b / dp_t) * gbs_scale
+            beta_scale = 1.0
+            n_scale = pp_scale * (dp_b / dp_t) * gbs_scale
+            count_scale = pp_scale * (mbn_t / mbn_b)
 
         elif lane == "COMPUTE":
             alpha_scale = 1.0
-            beta_scale  = 1.0
+            beta_scale = 1.0
+            core_scale = (dp_b / dp_t) * (mp_b / mp_t) * gbs_scale
             if pass_type == "recompute":
-                # Recompute also scales with pp ratio (stages recompute forward)
-                n_scale = (pp_t / pp_b) * (dp_b * mp_b) / (dp_t * mp_t) * gbs_scale
+                n_scale = (pp_t / pp_b) * core_scale
             else:
-                n_scale = (dp_b * mp_b) / (dp_t * mp_t) * gbs_scale
+                n_scale = core_scale
+            count_scale = 1.0
 
         elif lane == "BUBBLE":
-            # Bubble = (pp-1) × T_single_microbatch ∝ (pp-1) × MB / mp
-            # DP does NOT appear — DP doesn't change per-microbatch time.
-            mb_b        = _get(b, "mb", "mbs") or 1
-            mb_t        = _get(p, "mb", "mbs") if _has(p, "mb", "mbs") else mb_b
-            pp_scale    = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
-            alpha_scale = pp_scale * (mb_t / mb_b) * (mp_b / mp_t)
-            beta_scale  = 1.0
-            n_scale     = 1.0           # BUBBLE is latency-only; n_scale unused
+            pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
 
+            # Bubble is primarily a pipeline scheduling effect, not a clean primitive Hockney term.
+            # Keep only PP dependence here to avoid explosive scaling with micro-batch size.
+            alpha_scale = pp_scale
+            beta_scale = 1.0
+            n_scale = 1.0
+            count_scale = 1.0
+       
         else:
             alpha_scale = 1.0
-            beta_scale  = 1.0
-            n_scale     = 1.0
+            beta_scale = 1.0
+            n_scale = 1.0
+            count_scale = 1.0
 
-        return float(alpha_scale), float(n_scale), float(beta_scale)
+        return float(alpha_scale), float(n_scale), float(beta_scale), float(count_scale)    
 
     # ------------------------------------------------------------------ #
     #  Logging                                                             #

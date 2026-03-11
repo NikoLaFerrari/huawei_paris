@@ -276,7 +276,132 @@ class Interpreter:
 
         return partitions, partition_counts
 
+    def _partition_is_degenerate(self, data, min_points=4, min_unique_x=3, min_span_ratio=1.5):
+        xs = np.array([float(x) for x in data.get("x", [])], dtype=float)
+        xs = xs[np.isfinite(xs)]
 
+        if xs.size < min_points:
+            return True
+
+        uniq = np.unique(xs)
+        if uniq.size < min_unique_x:
+            return True
+
+        x_min = max(1e-12, float(np.min(uniq)))
+        x_max = float(np.max(uniq))
+        return (x_max / x_min) < min_span_ratio
+
+
+    def _merge_degenerate_partitions(self, partitions, partition_counts):
+        """
+        Merge overly fine partitions when there is not enough x-variation.
+        Order:
+          COMM: lane::prim[dtype|alg] -> lane::prim[dtype] -> lane::prim
+          COMPUTE: lane::prim[pass]   -> lane::prim
+        """
+        changed = True
+        while changed:
+            changed = False
+            new_parts = {}
+            new_counts = {}
+            consumed = set()
+
+            for key, data in partitions.items():
+                if key in consumed:
+                    continue
+
+                if not self._partition_is_degenerate(data):
+                    new_parts[key] = data
+                    new_counts[key] = partition_counts[key]
+                    continue
+
+                # COMM: drop alg_type first
+                if "::" in key and "[" in key and "|" in key:
+                    prefix, suffix = key.split("[", 1)
+                    dtype = suffix.split("|", 1)[0]
+                    merged_key = f"{prefix}[{dtype}]"
+
+                    merged_data = {
+                        "x": list(data["x"]),
+                        "y": list(data["y"]),
+                        "group_sizes": list(data["group_sizes"]),
+                        "fused_flags": list(data["fused_flags"]),
+                        "variables": list(data["variables"]),
+                    }
+                    merged_count = partition_counts[key]
+
+                    for other_key, other_data in partitions.items():
+                        if other_key == key or other_key in consumed:
+                            continue
+                        if other_key.startswith(prefix + "[") and f"[{dtype}|" in other_key:
+                            merged_data["x"].extend(other_data["x"])
+                            merged_data["y"].extend(other_data["y"])
+                            merged_data["group_sizes"].extend(other_data["group_sizes"])
+                            merged_data["fused_flags"].extend(other_data["fused_flags"])
+                            merged_data["variables"].extend(other_data["variables"])
+                            merged_count += partition_counts[other_key]
+                            consumed.add(other_key)
+
+                    new_parts[merged_key] = merged_data
+                    new_counts[merged_key] = merged_count
+                    consumed.add(key)
+                    changed = True
+                    continue
+
+                # COMM or COMPUTE: drop bracketed suffix entirely
+                if "::" in key and "[" in key:
+                    prefix = key.split("[", 1)[0]
+                    merged_key = prefix
+
+                    merged_data = {
+                        "x": list(data["x"]),
+                        "y": list(data["y"]),
+                        "group_sizes": list(data["group_sizes"]),
+                        "fused_flags": list(data["fused_flags"]),
+                        "variables": list(data["variables"]),
+                    }
+                    merged_count = partition_counts[key]
+
+                    for other_key, other_data in partitions.items():
+                        if other_key == key or other_key in consumed:
+                            continue
+                        if other_key.split("[", 1)[0] == prefix:
+                            merged_data["x"].extend(other_data["x"])
+                            merged_data["y"].extend(other_data["y"])
+                            merged_data["group_sizes"].extend(other_data["group_sizes"])
+                            merged_data["fused_flags"].extend(other_data["fused_flags"])
+                            merged_data["variables"].extend(other_data["variables"])
+                            merged_count += partition_counts[other_key]
+                            consumed.add(other_key)
+
+                    new_parts[merged_key] = merged_data
+                    new_counts[merged_key] = merged_count
+                    consumed.add(key)
+                    changed = True
+                    continue
+
+                new_parts[key] = data
+                new_counts[key] = partition_counts[key]
+
+            partitions = new_parts
+            partition_counts = new_counts
+
+        # Recompute scalar metadata after merging
+        for part_key, data in partitions.items():
+            data["variable"] = self._modal(data.get("variables", [])) or "bytes"
+            data["group_size"] = self._modal(
+                [g for g in data.get("group_sizes", []) if g > 0],
+                default=-1,
+            )
+            data["any_fused"] = any(data.get("fused_flags", []))
+
+            parts = self._parse_partition_key(part_key)
+            data["pass_type"] = parts.get("pass_type", "unknown")
+            data["dtype"] = parts.get("dtype", "unknown")
+            data["alg_type"] = parts.get("alg_type", "unknown")
+        return partitions, partition_counts    
+
+    '''
     def _merge_degenerate_partitions(self, partitions, partition_counts):
         """
         For any comm partition with < MIN_UNIQUE_X distinct x values,
@@ -332,6 +457,7 @@ class Interpreter:
             data["alg_type"]  = parts.get("alg_type",  "mixed")
 
         return merged, merged_counts
+    '''
 
     @staticmethod
     def _make_fallback_key(part_key):
@@ -497,6 +623,14 @@ class Interpreter:
         alpha = max(0.0, float(intercept))
 
         if slope <= 1e-12:
+            alpha = max(0.0, float(np.mean(y_vals)))
+            return alpha, float("inf"), r2, True, "non-positive slope / narrow x-range; using mean-latency fallback"
+
+        alpha = max(0.0, float(intercept))
+        beta = 1.0 / float(slope)
+        return alpha, beta, r2, low_confidence, confidence_reason
+
+        if slope <= 1e-12:
             print(
                 f"[interpreter] WARNING: {key} — slope={slope:.3e} ≤ 0 "
                 f"(noisy data over narrow range). Latency-only fallback."
@@ -518,6 +652,11 @@ class Interpreter:
         Splits mean duration as:  α ≈ 10 %,  n/β ≈ 90 %
         Returns (alpha, beta, r2=0.5).
         """
+        mean_y = max(1e-12, float(np.mean(y_vals)))
+        alpha = mean_y
+        beta = float("inf")
+        return alpha, beta, 0.5
+
         mean_y  = float(np.mean(y_vals)) if len(y_vals) > 0 else 0.0
         mean_x  = float(np.mean(x_vals)) if len(x_vals) > 0 else 1.0
         alpha   = mean_y * 0.10
