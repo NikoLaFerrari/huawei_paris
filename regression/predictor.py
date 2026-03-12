@@ -87,7 +87,7 @@ from collections import defaultdict
 class Predictor:
     """Predicts step execution time for a target parallel configuration."""
 
-    _DEFAULT_COEFFS = {"mp": 0.95, "dp": 0.10, "ep": 0.40}
+    _DEFAULT_COEFFS = {"mp": 0.95, "dp": 0.10, "ep": 0.40, "pp": 0.5}
 
     def __init__(self, model, base_dims, coeffs=None, nic_bw_gbps=None, arch=None):
         """
@@ -115,7 +115,7 @@ class Predictor:
         """
         self.model       = model
         self.base_dims   = base_dims
-        self.coeffs      = coeffs if coeffs is not None else dict(self._DEFAULT_COEFFS)
+        self.coeffs      = self._DEFAULT_COEFFS #coeffs if coeffs is not None else dict(self._DEFAULT_COEFFS)
         self.nic_bw_gbps = nic_bw_gbps
         self.arch        = arch          # model architecture dict (may be None)
 
@@ -257,11 +257,11 @@ class Predictor:
             return ns_ratio * (mp_b / mp_t) * _ring_bw_scale(mp_b, mp_t)
 
         elif lane == "PP_COMM":
-            # Total PP comm volume ∝ (P−1) × N × S  (pipeline depth × microbatch count × size)
+            # Total PP comm volume ∝ (P−1) × N × S  (pipeline depth × microbatch number × size)
             if pp_t == 1: return 0.0
             pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
-            ns_ratio = (mbn_t * mbs_t) / (mbn_b * mbs_b)
-            return ns_ratio
+            n_ratio = mbn_t / mbn_b
+            return n_ratio * pp_scale
 
         elif lane == "EP_COMM":
             return (ep_b / ep_t) * (dp_b / dp_t) * (gbs_t / gbs_b)
@@ -297,7 +297,7 @@ class Predictor:
         optimizer_swap = lane_times.get("OPTIMIZER_SWAP", 0.0)
 
         execution = compute + bubble
-        blocking  = pp_comm + mp_comm * self.coeffs["mp"]
+        blocking  = (pp_comm * self.coeffs["pp"]) + (mp_comm * self.coeffs["mp"])
         dp_eff    = dp_comm * self.coeffs["dp"]
         ep_eff    = ep_comm * self.coeffs["ep"]
         async_raw = max(dp_eff, ep_eff)

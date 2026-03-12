@@ -53,7 +53,7 @@ class Handler:
         self.cache_dir            = os.path.join(curr_dir, "cache")
         self.extraction_cache_dir = os.path.join(curr_dir, "extraction_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
-        self.optimized_coeffs = {"mp": 0.95, "dp": 0.5, "ep": 0.40}
+        self.optimized_coeffs = {"mp": 0.95, "dp": 0.5, "ep": 0.40, "pp": 0.5}
 
         for path in self.paths['config_paths']:
             with open(path, "r", encoding='utf-8') as f:
@@ -86,7 +86,7 @@ class Handler:
         mp = pc.get("model_parallel", 1)
         pp = pc.get("pipeline_stage", 1)
         ep = pc.get("expert_parallel", 1)
-        vpp = pc.get("pp_interleave_num", 1)
+        vpp = model_cfg.get("pp_interleave_num", 1)
 
         mb_num = pc.get("micro_batch_num", 1)
         mb_size = runner_cfg.get("batch_size", 1)
@@ -226,13 +226,14 @@ class Handler:
 
         res = minimize(
             objective_fn,
-            [0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5, 0.5],
             args=(actual_dur, all_bucket_data, vpps),
-            bounds=[(0, 1)] * 3,
+            bounds=[(0, 1)] * 4,
             method="L-BFGS-B",
         )
         if res.success:
-            self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2]}
+            print("[debug] x: {x}")
+            self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2], "pp": res.x[3]}
             print(f"[interface] Optimized overlap coeffs: {self.optimized_coeffs}")
         else:
             print(f"[interface] Calibration did not converge. Keeping defaults: {self.optimized_coeffs}")
@@ -252,13 +253,13 @@ class Handler:
 
         res = minimize(
             objective_fn,
-            [0.95, 0.10, 0.40],
+            [0.95, 0.10, 0.40, 0.40],
             args=(actual_durations, bucket_data, vpps),
-            bounds=[(0, 1)] * 3,
+            bounds=[(0, 1)] * 4,
             method="L-BFGS-B",
         )
         if res.success:
-            self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2]}
+            self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2], "pp": res.x[3]}
             print(f"[interface] Optimized overlap coeffs: {self.optimized_coeffs}")
         else:
             print(
@@ -272,9 +273,10 @@ class Handler:
             mp_c = self.optimized_coeffs["mp"]
             dp_c = self.optimized_coeffs["dp"]
             ep_c = self.optimized_coeffs["ep"]
+            pp_c = self.optimized_coeffs["pp"]
             pred = (
                 lt.get("COMPUTE", 0) + lt.get("BUBBLE", 0)
-                + lt.get("PP_COMM", 0)
+                + lt.get("PP_COMM", 0) * pp_c
                 + lt.get("MP_COMM", 0) * mp_c
                 + max(lt.get("DP_COMM", 0) * dp_c, lt.get("EP_COMM", 0) * ep_c)
                 + lt.get("OPTIMIZER_SWAP", 0)
@@ -661,7 +663,7 @@ def objective_fn(x, actual_times, bucket_data, vpps):
     Loss: sum of squared log-ratio errors (scale-invariant).
     UNKNOWN_COMM excluded (overlap properties unknown).
     """
-    mp_coeff, dp_coeff, ep_coeff = x[0], x[1], x[2]
+    mp_coeff, dp_coeff, ep_coeff, pp_coeff = x[0], x[1], x[2], x[3]
     e   = 0.0
     eps = 1e-9
 
@@ -669,7 +671,7 @@ def objective_fn(x, actual_times, bucket_data, vpps):
         bt = bucket_data[i]
 
         compute_bubble = bt.get("COMPUTE", 0.0) + bt.get("BUBBLE", 0.0)
-        blocking       = bt.get("PP_COMM", 0.0) + bt.get("MP_COMM", 0.0) * mp_coeff
+        blocking       = bt.get("PP_COMM", 0.0) * pp_coeff + bt.get("MP_COMM", 0.0) * mp_coeff
         async_comm     = max(
             bt.get("DP_COMM", 0.0) * dp_coeff,
             bt.get("EP_COMM", 0.0) * ep_coeff,
