@@ -102,7 +102,7 @@ class Handler:
                 'pp': pp,
                 'ep': ep,
                 'vpp': vpp,
-                'mb': mb_size,
+                'mbs': mb_size,
                 'gbs': gb_size,
                 'mb_num': mb_num,
             },
@@ -304,8 +304,8 @@ class Handler:
         def distance(s):
             d = s["dims"]
             return (
-                abs(maths.log(max(d.get("MP", 1), 1) / max(target_dims.get("MP", 1), 1)))
-                + abs(maths.log(max(d.get("DP", 1), 1) / max(target_dims.get("DP", 1), 1)))
+                abs(maths.log(max(d.get("MP", 1), 1) / max(target_dims.get("mp", 1), 1)))
+                + abs(maths.log(max(d.get("DP", 1), 1) / max(target_dims.get("dp", 1), 1)))
                 + abs(maths.log(max(d.get("PP", 1), 1) / max(target_dims.get("pp", 1), 1)))
             )
         return min(all_samples, key=distance)
@@ -366,7 +366,8 @@ class Handler:
             nd, nd_val, nd_total = self.run_nd(
                 Config(self.paths['config_paths'][i]), self.meta['raw_configs'][i]
             )
-            comm  = ["DP_COMM", "MP_COMM", "EP_COMM", "CP_COMM", "PP_COMM", "BUBBLE"]
+            ratio["BUBBLE"] = (cla["BUBBLE"] + cla["OPTIMIZER_SWAP"] + cla["IDLE"])/((nd["BUBBLE"]/100)*100)
+            comm  = ["DP_COMM", "MP_COMM", "EP_COMM", "CP_COMM", "PP_COMM"]
             ratio = {"COMPUTE": cla["COMPUTE"] / ((nd_total * nd['COMPUTE']) / 100)}
             for k in comm:
                 if k in cla and cla[k] > 0 and nd[k] > 0:
@@ -432,21 +433,23 @@ class Handler:
         # to minimise extrapolation error. A single fixed base (sample[0])
         # would produce large errors whenever the target config is closer to
         # a different training sample.
-        #nd_strats = [s["dims"] for s in all_samples]
-        nd_strats = self.get_strats_from_nd()
+        
+        #nd_strats = self.get_strats_from_nd()
+        nd_strats = self.meta['trace_dims_list']
         if nd_strats == []:
             print(f"[interface] ND outputs 0 valid strategies, no regression can be performed")
             return None
+
         keys      = [str(k) for k in nd_strats[0].keys()]
         results   = []
 
         for strat in nd_strats:
             vals      = [int(v) for v in strat.values()]
             pred_dims = {keys[j]: vals[j] for j in range(len(keys))}
-
+            if ("MB_NUM" not in pred_dims.keys()) and ("mb_num" not in pred_dims.keys()):
+                pred_dims["MB_NUM"] = pred_dims.pop("MB")
             base_sample = self._closest_sample(all_samples, pred_dims)
             base_dims   = base_sample["dims"]
-
             if use_ewa:
                 base_cd   = base_sample["lane_totals"]
                 predictor = Predictor({}, base_dims, coeffs=self.optimized_coeffs)
@@ -462,6 +465,7 @@ class Handler:
 
             results.append((pred_dims, total_time, r_out))
 
+        keys = [k for k in pred_dims.keys()]
                 # Fold OPTIMIZER_SWAP and IDLE into BUBBLE for reporting only
         folded_results = []
         for pred_dims, total_time, r_out in results:

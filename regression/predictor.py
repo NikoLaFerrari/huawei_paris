@@ -115,7 +115,7 @@ class Predictor:
         """
         self.model       = model
         self.base_dims   = base_dims
-        self.coeffs      = self._DEFAULT_COEFFS #coeffs if coeffs is not None else dict(self._DEFAULT_COEFFS)
+        self.coeffs      = coeffs if coeffs is not None else dict(self._DEFAULT_COEFFS)
         self.nic_bw_gbps = nic_bw_gbps
         self.arch        = arch          # model architecture dict (may be None)
 
@@ -202,11 +202,12 @@ class Predictor:
         lane_times : dict    {lane: scaled µs} before overlap adjustment
         """
         lane_times = {}
+        pred_dims_cap = {str(k).upper(): v for k, v in pred_dims.items()}
         for lane, base_us in base_cd.items():
             if lane in ("UNKNOWN_COMM", "OPTIMIZER_SWAP", "IDLE"):
                 lane_times[lane] = base_us
                 continue
-            scale = self._ewa_lane_scale(lane, pred_dims)
+            scale = self._ewa_lane_scale(lane, pred_dims_cap)
             lane_times[lane] = base_us * scale
 
         total_time, _ = self._apply_overlap_model(lane_times, pred_dims)
@@ -222,8 +223,8 @@ class Predictor:
         Key identity used throughout:
             num_microbatches  =  GBS / (DP × MB)
         """
-        b = self.base_dims
-        p = pred_dims
+        b = {str(k).upper(): v for k, v in self.base_dims.items()}
+        p = {str(k).upper(): v for k, v in pred_dims.items()}
 
         dp_b   = _get(b, "DP")
         mp_b   = _get(b, "MP")
@@ -238,7 +239,7 @@ class Predictor:
         pp_t   = _get(p, "PP") if _has(p, "PP") else pp_b
         ep_t   = _get(p, "EP") if _has(p, "EP") else ep_b
         mbs_t  = _get(p, "MBS") if _has(p, "MBS") else mbs_b
-        mbn_t  = _get(p, "MB") if _has(p, "MB") else max(1, gbs_t // (dp_t * mbs_t))
+        mbn_t  = _get(p, "MB_NUM") if _has(p,"MB_NUM") else mbn_b
         gbs_t  = mbs_t * mbn_t * dp_t
 
         if lane == "COMPUTE":
@@ -261,7 +262,7 @@ class Predictor:
             if pp_t == 1: return 0.0
             pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
             n_ratio = mbn_t / mbn_b
-            return n_ratio * pp_scale
+            return n_ratio #* pp_scale
 
         elif lane == "EP_COMM":
             return (ep_b / ep_t) * (dp_b / dp_t) * (gbs_t / gbs_b)
