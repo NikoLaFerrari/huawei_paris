@@ -258,6 +258,7 @@ class Predictor:
 
         elif lane == "PP_COMM":
             # Total PP comm volume ∝ (P−1) × N × S  (pipeline depth × microbatch count × size)
+            if pp_t == 1: return 0.0
             pp_scale = (pp_t - 1) / (pp_b - 1) if pp_b > 1 else (0.0 if pp_t <= 1 else 1.0)
             ns_ratio = (mbn_t * mbs_t) / (mbn_b * mbs_b)
             return ns_ratio
