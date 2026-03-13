@@ -64,17 +64,9 @@ class Handler:
                 self.meta['model_name_list'].append(model_name)
                 self.meta['recompute_enabled'].append(recompute)
 
-    # ------------------------------------------------------------------ #
-    #  Config helpers                                                      #
-    # ------------------------------------------------------------------ #
-
     def extract_trace_dims(self, raw_cfg):
         """
         Parse parallel dims from a training config YAML.
-
-        All keys are normalised to lowercase mp/dp/pp/ep/mb/vpp so that
-        _compute_scales in Predictor always receives consistent key names
-        regardless of whether the source is a config file or a pkl.
         """
         pc = raw_cfg.get("parallel_config")
         model_cfg = raw_cfg.get("model").get("model_config")
@@ -123,9 +115,6 @@ class Handler:
         except (OSError, TypeError, ValueError) as e:
             print(f"[regression] Cache write Error: {e}")
 
-    # ------------------------------------------------------------------ #
-    #  Extraction cache                                                    #
-    # ------------------------------------------------------------------ #
 
     def _cache_path(self, trace_path):
         import hashlib
@@ -136,17 +125,10 @@ class Handler:
         """
         Return (all_samples, all_classifications).
 
-        Strategy
-        ────────
         1. If extraction_cache_dir contains extract_*.pkl files, load them
-           all via load_from_pkls (hash-based lookup is skipped because trace
-           paths differ between machines).
-        2. After loading from pkls, enrich each sample's dims with fields
-           from the corresponding config file (ep, mb, vpp) that the extractor
-           did not store at extraction time.
-        3. If pkl count doesn't match trace count, fall through to full
+           all via load_from_pkls (TO-D_.
+        2. If pkl count doesn't match trace count, fall through to full
            re-extraction.
-        4. Full re-extraction saves new pkls by hash for future use.
         """
         import pickle
         import glob
@@ -164,10 +146,6 @@ class Handler:
             all_samples, all_classifications = extractor.load_from_pkls(pkl_files)
 
             if len(all_samples) == len(self.paths['trace_paths']):
-                # Enrich pkl dims with config dims for fields the extractor
-                # didn't store (ep, mb, vpp come from the config parser).
-                # Config ordering may differ from pkl ordering — match by
-                # the dims that ARE present (mp, dp, pp).
                 for i, sample in enumerate(all_samples):
                     pkl_dims    = self.meta['trace_dims_list'][i]
                     # Ensure no TP key leaks through — rename to mp
@@ -214,6 +192,7 @@ class Handler:
         Calibrate overlap coefficients using raw Hockney bucket times.
         Fallback path used when EWA lane_totals are unavailable.
         """
+        return self.optimized_coeffs
         print("[interface] Calibrating overlap coefficients (Hockney path)...")
 
         all_bucket_data = []
@@ -226,13 +205,13 @@ class Handler:
 
         res = minimize(
             objective_fn,
-            [0.5, 0.5, 0.5, 0.5],
+            [0.9, 0.3, 0.4, 0.4],
             args=(actual_dur, all_bucket_data, vpps),
             bounds=[(0, 1)] * 4,
             method="L-BFGS-B",
         )
         if res.success:
-            print("[debug] x: {x}")
+            print(f"[debug] x: {res.x}")
             self.optimized_coeffs = {"mp": res.x[0], "dp": res.x[1], "ep": res.x[2], "pp": res.x[3]}
             print(f"[interface] Optimized overlap coeffs: {self.optimized_coeffs}")
         else:
@@ -242,9 +221,6 @@ class Handler:
     def _calibrate_from_ewa(self, all_samples, actual_durations):
         """
         Calibrate overlap coefficients using EWA lane totals as bucket_data.
-
-        For self-prediction all _compute_scales factors are 1.0, so
-        lane_totals feed directly into objective_fn without any extrapolation.
         """
         print("[interface] Calibrating overlap coefficients from EWA lane totals...")
 
@@ -296,10 +272,6 @@ class Handler:
         Return the sample whose parallel dims require the least scaling to
         reach target_dims, measured as sum of |log(base/target)| over
         mp, dp, pp.
-
-        Using the closest base minimises extrapolation error — scaling
-        physics are most accurate when the ratio between base and target
-        is small.
         """
         def distance(s):
             d = s["dims"]
@@ -391,12 +363,12 @@ class Handler:
         """
         Main entry point.
 
-        EWA path  (preferred): uses lane_totals from EventWaitAnalyzer — causally
-                   attributed per-lane µs — and applies _compute_scales physics to
+        EWA path: uses lane_totals from EventWaitAnalyzer 
+                   and applies _compute_scales physics to
                    scale each lane to the target config. Bypasses Hockney fits.
 
-        Hockney path (fallback): used automatically when lane_totals are absent
-                   (e.g. old cache entries). Re-fits α,β per primitive and sums.
+        Hockney path: used automatically when no pkl files available. 
+                      Re-fits α,β per primitive and sums.
         """
         set_verbose_level(0)
         print(f"[regression] Analysing {len(self.paths['trace_paths'])} traces...")
@@ -429,13 +401,12 @@ class Handler:
         else:
             self.calibrate_coefficients(actual_durations)
 
-        # Build predictor: base is chosen per-target as the closest sample
-        # to minimise extrapolation error. A single fixed base (sample[0])
-        # would produce large errors whenever the target config is closer to
-        # a different training sample.
-        
-        nd_strats = self.get_strats_from_nd()
-        #nd_strats = self.meta['trace_dims_list']
+        ## choose which nd_strats you want: 
+        ## 1. take ND's proposed parallel strategies
+        ## 2. check the prediction on input traces' YAMLs.
+
+        #nd_strats = self.get_strats_from_nd()
+        nd_strats = self.meta['trace_dims_list']
         if nd_strats == []:
             print(f"[interface] ND outputs 0 valid strategies, no regression can be performed")
             return None
@@ -446,6 +417,8 @@ class Handler:
         for strat in nd_strats:
             vals      = [int(v) for v in strat.values()]
             pred_dims = {keys[j]: vals[j] for j in range(len(keys))}
+            if "ep" not in pred_dims.keys():
+                pred_dims["ep"] = 1
             if ("MB_NUM" not in pred_dims.keys()) and ("mb_num" not in pred_dims.keys()):
                 pred_dims["MB_NUM"] = pred_dims.pop("MB")
             base_sample = self._closest_sample(all_samples, pred_dims)
@@ -466,7 +439,6 @@ class Handler:
             results.append((pred_dims, total_time, r_out))
 
         keys = [k for k in pred_dims.keys()]
-                # Fold OPTIMIZER_SWAP and IDLE into BUBBLE for reporting only
         folded_results = []
         for pred_dims, total_time, r_out in results:
             r_print = dict(r_out)
@@ -479,7 +451,6 @@ class Handler:
         results = folded_results
         results.sort(key=lambda x: x[1])
 
-        # Build measured_map: normalised dims tuple → actual step µs
         measured_map = {}
         for i, sample in enumerate(all_samples):
             if sample.get("mean_step_us") is not None:
@@ -522,22 +493,9 @@ class Handler:
         #self.ratios(all_classifications)
         return results[0][2]
 
-    # ------------------------------------------------------------------ #
-    #  Leave-one-out cross-validation                                      #
-    # ------------------------------------------------------------------ #
-
     def validate(self):
         """
         Leave-one-out cross-validation across all provided traces.
-
-        For each held-out trace i:
-          1. Calibrate on the remaining n-1 traces.
-          2. Predict step time for trace i's config.
-          3. Compare predicted vs actual (mean_step_us).
-
-        Uses EWA path when lane_totals are present; Hockney fallback otherwise.
-        Requires at least 2 distinct configs; identical configs are skipped for
-        the cross-config fold since self-prediction is uninformative there.
         """
         n = len(self.paths['trace_paths'])
         if n < 2:
@@ -647,10 +605,6 @@ class Handler:
         )
         return results
 
-
-# ------------------------------------------------------------------ #
-#  Objective function                                                   #
-# ------------------------------------------------------------------ #
 
 def objective_fn(x, actual_times, bucket_data, vpps):
     """
